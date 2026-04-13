@@ -6,6 +6,7 @@ import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_db
 from app.main import app
@@ -32,6 +33,8 @@ async def db_session(engine):
 
 @pytest_asyncio.fixture
 async def client(db_session: AsyncSession):
+    settings.a2_auto_start_scheduler = False
+
     async def _override_get_db():
         yield db_session
 

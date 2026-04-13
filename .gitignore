@@ -205,3 +205,6 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Some docs for coding myself, not for public use, so I don't want to commit them
+full_doc.md

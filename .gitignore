@@ -186,7 +186,7 @@ cython_debug/
 #  that can be found at https://github.com/github/gitignore/blob/main/Global/VisualStudioCode.gitignore
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
-# .vscode/
+.vscode/
 
 # Ruff stuff:
 .ruff_cache/
@@ -208,3 +208,12 @@ __marimo__/
 
 # Some docs for coding myself, not for public use, so I don't want to commit them
 full_doc.md
+
+# auto generate database files
+*.db
+
+# data_docx files 项目md格式的文件，用于skills
+data_docx/
+
+# agent skills
+.cursorrules

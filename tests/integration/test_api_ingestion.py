@@ -1,7 +1,7 @@
 """ingestion 路由集成测试 — 验证实时/历史录音注册接口。"""
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -50,3 +50,28 @@ async def test_register_historical_file(client):
 # async def test_trigger_historical_download_stub(client):
 #     """TODO: 接入真实 LiveATC 后，验证历史下载任务调度接口（RQ-A-2-20）。"""
 #     pass
+
+
+@pytest.mark.asyncio
+async def test_scheduler_status(client):
+    resp = await client.get("/api/v1/ingestion/scheduler/status")
+    assert resp.status_code == 200
+    assert "running" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_trigger_historical_download(client):
+    with patch("app.api.routes.ingestion.liveatc_scheduler.trigger_historical_once", AsyncMock(return_value=2)):
+        resp = await client.post("/api/v1/ingestion/scheduler/trigger/historical")
+    assert resp.status_code == 200
+    assert resp.json()["downloaded"] == 2
+    assert "error" in resp.json()
+
+
+@pytest.mark.asyncio
+async def test_trigger_realtime_once(client):
+    with patch("app.api.routes.ingestion.liveatc_scheduler.trigger_realtime_once", AsyncMock(return_value=True)):
+        resp = await client.post("/api/v1/ingestion/scheduler/trigger/realtime")
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+    assert "error" in resp.json()

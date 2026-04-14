@@ -44,5 +44,5 @@ http://127.0.0.1:8000/docs
 - `POST /api/v1/ingestion/scheduler/trigger/historical`：手动触发一次历史下载
 
 ## 后续任务
--接入真实LiveATC实时监听与历史下载任务调度
--补充A-5用户与航迹外键联调
+- 接入真实LiveATC实时监听与历史下载任务调度
+- 补充A-5用户与航迹外键联调

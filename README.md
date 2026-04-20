@@ -49,7 +49,57 @@ http://127.0.0.1:8000/docs
 - `POST /api/v1/ingestion/scheduler/trigger/realtime`：手动触发一次实时切片
 - `POST /api/v1/ingestion/scheduler/trigger/historical`：手动触发一次历史下载
 
+## 测试
+
+默认测试命令（会跳过 `network`、`e2e`、`longrun`）：
+
+```bash
+pytest tests/ -v
+```
+
+真实 LiveATC 网络测试：
+
+```bash
+pytest -m network -v
+```
+
+长稳测试（手动触发）：
+
+```bash
+set A2_LONGRUN_SECONDS=7200
+set A2_LONGRUN_INTERVAL_SECONDS=30
+set A2_LONGRUN_INCLUDE_HISTORICAL=1
+pytest -m "e2e and longrun" -v
+```
+
+更多说明见 [tests/README.md](tests/README.md)。
+
+## 端到端压测
+
+启动服务后执行：
+
+```bash
+locust -f tests/loadtest/locustfile.py --host=http://127.0.0.1:8000
+```
+
+高并发场景：
+
+```bash
+locust -f tests/loadtest/scenarios/peak_concurrent.py --host=http://127.0.0.1:8000
+```
+
+长稳压测场景：
+
+```bash
+locust -f tests/loadtest/scenarios/long_stability.py --host=http://127.0.0.1:8000
+```
+
+独立长稳采样脚本：
+
+```bash
+python tests/loadtest/soak_runner.py --base-url http://127.0.0.1:8000 --duration-minutes 120 --interval-seconds 30
+```
+
 ## 后续任务
 
 - 接入A-5用户与航迹外键联调（`track_id`、`author_id`）
-- 增加端到端压测与长期稳定性测试

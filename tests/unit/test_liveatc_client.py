@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 
+from app.core.config import settings
 from app.services.liveatc_client import LiveATCHTTPClient
+
+pytestmark = pytest.mark.unit
+
+
+async def _network_guard(coro):
+    try:
+        return await asyncio.wait_for(coro, timeout=45)
+    except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
+        pytest.skip(f"LiveATC network unavailable or too slow: {exc}")
 
 
 class _Resp:
@@ -22,6 +33,24 @@ class _Resp:
 
 
 @pytest.mark.asyncio
+async def test_build_search_url_uppercase_icao():
+    client = LiveATCHTTPClient()
+    assert client.build_search_url("vhhh") == "https://www.liveatc.net/search/?icao=VHHH"
+
+
+@pytest.mark.asyncio
+async def test_get_search_page_returns_url_and_html():
+    client = LiveATCHTTPClient()
+    http_client = AsyncMock()
+    http_client.get = AsyncMock(return_value=_Resp("<html>ok</html>", 200))
+
+    search_url, html = await client.get_search_page(http_client, "VHHH")
+
+    assert search_url.endswith("icao=VHHH")
+    assert html == "<html>ok</html>"
+
+
+@pytest.mark.asyncio
 async def test_resolve_realtime_stream_url():
     client = LiveATCHTTPClient()
     http_client = AsyncMock()
@@ -33,6 +62,28 @@ async def test_resolve_realtime_stream_url():
     )
     url = await client.resolve_realtime_stream_url(http_client, "VHHH")
     assert url == "https://audio.example/vhhh_stream.mp3"
+
+
+@pytest.mark.asyncio
+async def test_resolve_realtime_stream_url_direct_fallback():
+    client = LiveATCHTTPClient()
+    client.mount_ids = ["vhhh5"]
+    http_client = AsyncMock()
+
+    async def _fake_get(url: str, **kwargs):
+        if url.endswith(".pls") or url.endswith(".m3u"):
+            return _Resp("not found", status_code=404, url=url)
+        if "search/?icao=" in url:
+            return _Resp("not found", status_code=404, url=url)
+        if "hlisten.php" in url:
+            return _Resp("not found", status_code=404, url=url)
+        if url == "https://d.liveatc.net/vhhh5":
+            return _Resp("ok", status_code=200, url=url)
+        return _Resp("not found", status_code=404, url=url)
+
+    http_client.get = AsyncMock(side_effect=_fake_get)
+    url = await client.resolve_realtime_stream_url(http_client, "VHHH")
+    assert url == "https://d.liveatc.net/vhhh5"
 
 
 @pytest.mark.asyncio
@@ -70,3 +121,38 @@ async def test_list_historical_links_from_plain_filename_text():
     assert (
         "https://archive.liveatc.net/vhhh5/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3" in urls
     )
+
+
+@pytest.mark.network
+@pytest.mark.asyncio
+async def test_resolve_realtime_stream_url_real_network():
+    client = LiveATCHTTPClient()
+    headers = {
+        "User-Agent": settings.a2_http_user_agent,
+        "Accept-Language": settings.a2_http_accept_language,
+    }
+    timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as http_client:
+        url = await _network_guard(client.resolve_realtime_stream_url(http_client, settings.a2_icao_code))
+
+    assert url is None or url.startswith("http")
+
+
+@pytest.mark.network
+@pytest.mark.asyncio
+async def test_list_historical_links_real_network():
+    client = LiveATCHTTPClient()
+    headers = {
+        "User-Agent": settings.a2_http_user_agent,
+        "Accept-Language": settings.a2_http_accept_language,
+    }
+    timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
+
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as http_client:
+        links = await _network_guard(client.list_historical_links(http_client, settings.a2_icao_code))
+
+    assert isinstance(links, list)
+    if links:
+        assert links[0].url.startswith("http")
+        assert links[0].file_name.lower().endswith(".mp3")

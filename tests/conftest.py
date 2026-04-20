@@ -1,6 +1,8 @@
 """全局测试配置：内存数据库引擎、AsyncSession fixture、FastAPI 依赖重写。"""
 from __future__ import annotations
 
+from collections.abc import Callable, Generator
+
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
@@ -12,6 +14,30 @@ from app.db.session import get_db
 from app.main import app
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+
+
+@pytest.fixture
+def override_settings() -> Generator[Callable[..., None], None, None]:
+    original: dict[str, object] = {}
+
+    def _apply(**kwargs: object) -> None:
+        for key, value in kwargs.items():
+            if key not in original:
+                original[key] = getattr(settings, key)
+            setattr(settings, key, value)
+
+    yield _apply
+
+    for key, value in original.items():
+        setattr(settings, key, value)
+
+
+@pytest.fixture
+def tmp_audio_storage(tmp_path, override_settings):
+    storage = tmp_path / "audio"
+    storage.mkdir(parents=True, exist_ok=True)
+    override_settings(a2_audio_storage=str(storage))
+    return storage
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -32,8 +58,8 @@ async def db_session(engine):
 
 
 @pytest_asyncio.fixture
-async def client(db_session: AsyncSession):
-    settings.a2_auto_start_scheduler = False
+async def client(db_session: AsyncSession, override_settings):
+    override_settings(a2_auto_start_scheduler=False)
 
     async def _override_get_db():
         yield db_session

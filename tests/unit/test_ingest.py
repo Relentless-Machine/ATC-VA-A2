@@ -1,16 +1,56 @@
-"""LiveATCIngestionService 单元测试 — Mock DB Session，预留 LiveATC 网络接口桩。"""
+"""LiveATCIngestionService 单元测试。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.services.ingestion_service import LiveATCIngestionService
 
+pytestmark = pytest.mark.unit
 
-def _utc(y, m, d, h=0, mi=0):
-    return datetime(y, m, d, h, mi, tzinfo=timezone.utc)
+
+def _utc(y, m, d, h=0, mi=0, s=0):
+    return datetime(y, m, d, h, mi, s, tzinfo=timezone.utc)
+
+
+class _StreamResponse:
+    def __init__(self, chunks: list[bytes], status_code: int = 200):
+        self._chunks = chunks
+        self.status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            request = httpx.Request("GET", "https://d.liveatc.net/vhhh5")
+            response = httpx.Response(self.status_code, request=request)
+            raise httpx.HTTPStatusError("http error", request=request, response=response)
+
+    async def aiter_bytes(self, chunk_size: int = 8192):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class _AsyncClientContext:
+    def __init__(self, stream_response: _StreamResponse):
+        self._stream_response = stream_response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def stream(self, method: str, url: str, follow_redirects: bool = True):
+        return self._stream_response
 
 
 @pytest.fixture
@@ -18,14 +58,18 @@ def mock_db():
     db = AsyncMock()
     db.add = MagicMock()
     db.commit = AsyncMock()
-    db.refresh = AsyncMock(side_effect=lambda obj: None)
+    db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", 1))
+    db.execute = AsyncMock()
     return db
 
 
+@pytest.fixture
+def svc(mock_db):
+    return LiveATCIngestionService(mock_db)
+
+
 @pytest.mark.asyncio
-async def test_register_realtime_capture(mock_db):
-    """register_realtime_capture 应向 DB 添加一条 VoiceFile 记录并 commit。"""
-    svc = LiveATCIngestionService(mock_db)
+async def test_register_realtime_capture(mock_db, svc):
     await svc.register_realtime_capture(
         file_name="live_001.mp3",
         file_path="/audio/live_001.mp3",
@@ -40,9 +84,7 @@ async def test_register_realtime_capture(mock_db):
 
 
 @pytest.mark.asyncio
-async def test_register_historical_capture(mock_db):
-    """register_historical_capture 应创建存储目录并写入 DB 记录。"""
-    svc = LiveATCIngestionService(mock_db)
+async def test_register_historical_capture(mock_db, svc):
     with patch("app.services.ingestion_service.Path.mkdir"):
         await svc.register_historical_capture(
             file_name="hist_001.mp3",
@@ -54,60 +96,144 @@ async def test_register_historical_capture(mock_db):
     mock_db.commit.assert_awaited_once()
 
 
-def test_extract_utc_range_from_filename(mock_db):
-    svc = LiveATCIngestionService(mock_db)
-    parsed = svc.extract_utc_range_from_filename("VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3")
-    assert parsed is not None
-    start, end = parsed
-    assert start.year == 2026
-    assert start.month == 4
-    assert start.day == 13
-    assert start.hour == 0
-    assert start.minute == 0
-    assert int((end - start).total_seconds()) == 1800
+@pytest.mark.asyncio
+async def test_has_source_url_true(mock_db, svc):
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = 1
+    mock_db.execute.return_value = execute_result
+
+    assert await svc.has_source_url("https://archive.liveatc.net/vhhh5/a.mp3") is True
 
 
 @pytest.mark.asyncio
-async def test_register_historical_download_streamed(mock_db):
-    svc = LiveATCIngestionService(mock_db)
+async def test_has_source_url_false(mock_db, svc):
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = None
+    mock_db.execute.return_value = execute_result
 
+    assert await svc.has_source_url("https://archive.liveatc.net/vhhh5/missing.mp3") is False
+
+
+def test_floor_to_half_hour(svc):
+    assert svc.floor_to_half_hour(_utc(2026, 4, 13, 10, 0, 3)) == _utc(2026, 4, 13, 10, 0, 0)
+    assert svc.floor_to_half_hour(_utc(2026, 4, 13, 10, 29, 59)) == _utc(2026, 4, 13, 10, 0, 0)
+    assert svc.floor_to_half_hour(_utc(2026, 4, 13, 10, 30, 1)) == _utc(2026, 4, 13, 10, 30, 0)
+    assert svc.floor_to_half_hour(_utc(2026, 4, 13, 10, 59, 59)) == _utc(2026, 4, 13, 10, 30, 0)
+
+
+def test_estimate_realtime_segment_bounds_short_capture(svc):
+    start = _utc(2026, 4, 13, 0, 0)
+    end = start + timedelta(seconds=60)
+    seg_start, seg_end = svc.estimate_realtime_segment_bounds(start, end)
+    assert seg_start == start
+    assert seg_end == end
+
+
+def test_estimate_realtime_segment_bounds_full_window(svc):
+    start = _utc(2026, 4, 13, 0, 3)
+    end = start + timedelta(seconds=1750)
+    seg_start, seg_end = svc.estimate_realtime_segment_bounds(start, end)
+    assert seg_start == _utc(2026, 4, 13, 0, 0)
+    assert seg_end == _utc(2026, 4, 13, 0, 30)
+
+
+def test_extract_utc_range_from_filename(svc):
+    parsed = svc.extract_utc_range_from_filename("VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3")
+    assert parsed is not None
+    start, end = parsed
+    assert start == _utc(2026, 4, 13, 0, 0)
+    assert end == _utc(2026, 4, 13, 0, 30)
+
+
+def test_extract_utc_range_from_filename_invalid(svc):
+    assert svc.extract_utc_range_from_filename("VHHH5-Invalid-Format.mp3") is None
+    assert svc.extract_utc_range_from_filename("VHHH5-App-Dep-Dir-Zone-Apr-13-2026-2500Z.mp3") is None
+
+
+@pytest.mark.asyncio
+async def test_register_historical_download_streamed(mock_db, svc, tmp_audio_storage):
     async def _iter_bytes():
         yield b"abc"
         yield b"def"
 
-    with patch("app.services.ingestion_service.Path.mkdir"), patch("app.services.ingestion_service.asyncio.to_thread") as to_thread:
-        mock_fp = MagicMock()
-        open_called = False
-
-        async def _fake_to_thread(fn, *args, **kwargs):
-            nonlocal open_called
-            if not open_called and hasattr(fn, "__name__") and fn.__name__ == "_open_file":
-                open_called = True
-                return mock_fp
-            return fn(*args, **kwargs)
-
-        to_thread.side_effect = _fake_to_thread
-        row = await svc.register_historical_download(
-            file_name="VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3",
-            source_url="https://archive.liveatc.net/vhhh5/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3",
-            byte_iter=_iter_bytes(),
-        )
+    now = _utc(2026, 4, 13, 0, 0)
+    row = await svc.register_historical_download(
+        file_name="VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3",
+        source_url="https://archive.liveatc.net/vhhh5/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3",
+        byte_iter=_iter_bytes(),
+        now=now,
+    )
 
     assert row is not None
-    mock_db.add.assert_called_once()
+    assert row.file_size == 6
+    assert row.start_time_utc == _utc(2026, 4, 13, 0, 0)
+    assert row.end_time_utc == _utc(2026, 4, 13, 0, 30)
+    assert Path(row.file_path).exists()
     mock_db.commit.assert_awaited_once()
 
 
-# ---------------------------------------------------------------------------
-# 预留接口桩：真实 LiveATC 网络抓取（RQ-A-2-10 / RQ-A-2-20）
-# 当接入真实 LiveATC 时，取消注释并实现以下测试。
-# ---------------------------------------------------------------------------
-# @pytest.mark.asyncio
-# async def test_fetch_realtime_stream_stub(mock_db):
-#     """TODO: Mock httpx 请求，验证实时流抓取逻辑（RQ-A-2-10）。"""
-#     pass
-#
-# @pytest.mark.asyncio
-# async def test_schedule_historical_download_stub(mock_db):
-#     """TODO: Mock httpx 请求，验证历史下载任务调度（RQ-A-2-20）。"""
-#     pass
+@pytest.mark.asyncio
+async def test_register_historical_download_empty_bytes_returns_none(svc, tmp_audio_storage):
+    async def _empty_iter():
+        yield b""
+        yield b""
+
+    now = _utc(2026, 4, 13, 1, 0)
+    row = await svc.register_historical_download(
+        file_name="VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0100Z.mp3",
+        source_url="https://archive.liveatc.net/vhhh5/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0100Z.mp3",
+        byte_iter=_empty_iter(),
+        now=now,
+    )
+
+    target_dir = tmp_audio_storage / "historical" / now.strftime("%Y%m%d")
+    assert row is None
+    assert list(target_dir.glob("*.mp3")) == []
+
+
+@pytest.mark.asyncio
+async def test_capture_realtime_stream_success(mock_db, svc, tmp_audio_storage):
+    stream_response = _StreamResponse([b"abc", b"def"])
+    client_ctx = _AsyncClientContext(stream_response)
+    capture_start = _utc(2026, 4, 20, 12, 0, 0)
+    capture_end = _utc(2026, 4, 20, 12, 0, 10)
+
+    with patch("app.services.ingestion_service.httpx.AsyncClient", return_value=client_ctx), patch.object(
+        svc, "utc_now", side_effect=[capture_start, capture_end]
+    ):
+        row = await svc.capture_realtime_stream(
+            stream_url="https://d.liveatc.net/vhhh5",
+            timeout_seconds=30,
+            max_bytes=1024,
+            request_headers={"User-Agent": "pytest"},
+        )
+
+    realtime_dir = tmp_audio_storage / "realtime" / capture_start.strftime("%Y%m%d")
+    assert row is not None
+    assert row.file_size == 6
+    assert row.source_url == "https://d.liveatc.net/vhhh5"
+    assert row.start_time_utc == capture_start
+    assert row.end_time_utc == capture_end
+    assert len(list(realtime_dir.glob("*.mp3"))) == 1
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_capture_realtime_stream_zero_bytes_returns_none(svc, tmp_audio_storage):
+    stream_response = _StreamResponse([b"", b""])
+    client_ctx = _AsyncClientContext(stream_response)
+    capture_start = _utc(2026, 4, 20, 12, 1, 0)
+    capture_end = _utc(2026, 4, 20, 12, 1, 5)
+
+    with patch("app.services.ingestion_service.httpx.AsyncClient", return_value=client_ctx), patch.object(
+        svc, "utc_now", side_effect=[capture_start, capture_end]
+    ):
+        row = await svc.capture_realtime_stream(
+            stream_url="https://d.liveatc.net/vhhh5",
+            timeout_seconds=30,
+            max_bytes=1024,
+        )
+
+    realtime_dir = tmp_audio_storage / "realtime" / capture_start.strftime("%Y%m%d")
+    assert row is None
+    assert list(realtime_dir.glob("*.mp3")) == []

@@ -5,10 +5,10 @@ from datetime import datetime, timezone
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import insert
+from sqlalchemy import func, insert, select
 
 from app.core.config import settings
-from app.db.models import VoiceFile
+from app.db.models import VoiceFile, VoiceSegment
 
 
 def _utc(h=0):
@@ -87,6 +87,34 @@ async def test_callback_fk_missing_404(client):
         headers={"X-A3-Token": settings.a3_callback_token},
     )
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_callback_idempotent_upsert(client, db_session, voice_file_id):
+    payload = {
+        "voice_file_id": voice_file_id,
+        "process_status": 2,
+        "segments": [
+            {"relative_start": 0.0, "relative_end": 2.0, "asr_content": "first"},
+        ],
+    }
+    headers = {"X-A3-Token": settings.a3_callback_token}
+
+    first = await client.post("/api/v1/a3/callback", json=payload, headers=headers)
+    assert first.status_code == 201
+
+    payload["segments"][0]["asr_content"] = "updated"
+    second = await client.post("/api/v1/a3/callback", json=payload, headers=headers)
+    assert second.status_code == 201
+
+    count = await db_session.execute(
+        select(func.count()).select_from(VoiceSegment).where(
+            VoiceSegment.voice_file_id == voice_file_id,
+            VoiceSegment.relative_start == 0.0,
+            VoiceSegment.relative_end == 2.0,
+        )
+    )
+    assert count.scalar_one() == 1
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import datetime, timezone
 
 import httpx
@@ -9,6 +10,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.services.ingestion_service import LiveATCIngestionService
 from app.services.liveatc_client import LiveATCHTTPClient
+from app.services.storage_service import StorageManagerService
 
 
 class LiveATCScheduler:
@@ -110,9 +112,17 @@ class LiveATCScheduler:
             await asyncio.sleep(settings.a2_historical_interval_seconds)
 
     async def _run_realtime_once(self) -> bool:
+        async with SessionLocal() as db:
+            storage = StorageManagerService(db)
+            can_download = await storage.ensure_capacity_for_new_download()
+            if not can_download:
+                self._last_error = "storage low: skipped realtime capture"
+                return False
+
         headers = self._default_headers()
         stream_url = None
-        for _ in range(max(settings.a2_http_max_retries, 1)):
+        max_retries = max(settings.a2_http_max_retries, 1)
+        for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
                     stream_url = await self.client.resolve_realtime_stream_url(client, settings.a2_icao_code)
@@ -120,7 +130,8 @@ class LiveATCScheduler:
                     break
             except Exception as exc:  # noqa: BLE001
                 self._last_error = f"realtime resolve failed: {exc}"
-                await asyncio.sleep(1)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(self._backoff_delay(attempt))
         if not stream_url:
             self._last_error = "unable to resolve realtime stream url"
             return False
@@ -134,9 +145,20 @@ class LiveATCScheduler:
         return True
 
     async def _run_historical_once(self) -> int:
+        async with SessionLocal() as db:
+            storage = StorageManagerService(db)
+            can_download = await storage.ensure_capacity_for_new_download()
+            if not can_download:
+                self._last_error = "storage low: skipped historical download"
+                self._last_historical_found = 0
+                self._last_historical_skipped = 0
+                self._last_historical_downloaded = 0
+                return 0
+
         headers = self._default_headers()
         last_exc: Exception | None = None
-        for _ in range(max(settings.a2_http_max_retries, 1)):
+        max_retries = max(settings.a2_http_max_retries, 1)
+        for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
                     links = await self.client.list_historical_links(client, settings.a2_icao_code)
@@ -153,15 +175,16 @@ class LiveATCScheduler:
                             if await svc.has_source_url(item.url):
                                 skipped += 1
                                 continue
-                            resp = await client.get(item.url, follow_redirects=True)
-                            if resp.status_code >= 400 or not resp.content:
-                                continue
-                            await svc.register_historical_download(
-                                file_name=item.file_name,
-                                source_url=item.url,
-                                content=resp.content,
-                            )
-                            saved += 1
+                            async with client.stream("GET", item.url, follow_redirects=True) as resp:
+                                if resp.status_code >= 400:
+                                    continue
+                                row = await svc.register_historical_download(
+                                    file_name=item.file_name,
+                                    source_url=item.url,
+                                    byte_iter=resp.aiter_bytes(chunk_size=settings.a2_chunk_size),
+                                )
+                                if row is not None:
+                                    saved += 1
                     self._last_historical_skipped = skipped
                     self._last_historical_downloaded = saved
                     self._last_historical_at = datetime.now(timezone.utc)
@@ -169,10 +192,18 @@ class LiveATCScheduler:
                     return saved
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
-                await asyncio.sleep(1)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(self._backoff_delay(attempt))
         if last_exc is not None:
             raise last_exc
         return 0
+
+    def _backoff_delay(self, attempt: int) -> float:
+        base = max(settings.a2_http_backoff_base_seconds, 0.1)
+        max_wait = max(settings.a2_http_backoff_max_seconds, base)
+        exp_wait = min(base * (2**attempt), max_wait)
+        jitter = random.uniform(0, base)
+        return min(exp_wait + jitter, max_wait)
 
 
 liveatc_scheduler = LiveATCScheduler()

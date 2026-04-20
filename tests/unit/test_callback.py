@@ -25,6 +25,9 @@ def _make_voice_file(fid: int = 1):
 def mock_db():
     db = AsyncMock()
     db.add = MagicMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = None
+    db.execute = AsyncMock(return_value=execute_result)
     db.commit = AsyncMock()
     db.refresh = AsyncMock()
     return db
@@ -50,6 +53,7 @@ async def test_handle_callback_inserts_segments(mock_db):
 
     assert resp.segment_count == 2
     assert mock_db.add.call_count == 2
+    assert mock_db.execute.await_count == 2
     mock_db.commit.assert_awaited_once()
 
 

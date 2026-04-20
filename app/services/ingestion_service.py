@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
+from typing import AsyncIterator
 
 import httpx
 from sqlalchemy import select
@@ -15,6 +17,8 @@ from app.db.models import VoiceFile
 
 class LiveATCIngestionService:
     """A-2 ingestion service skeleton for realtime and historical data pipelines."""
+
+    HISTORICAL_NAME_PATTERN = re.compile(r"([A-Za-z]{3})-(\d{1,2})-(\d{4})-(\d{4})Z", re.IGNORECASE)
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -56,6 +60,7 @@ class LiveATCIngestionService:
         end_time_utc: datetime,
         file_path: str | None = None,
         file_size: int | None = None,
+        status: int = 1,
     ) -> VoiceFile:
         if file_path is None:
             storage_dir = Path(settings.a2_audio_storage)
@@ -70,7 +75,7 @@ class LiveATCIngestionService:
             end_time_utc=end_time_utc,
             source_url=source_url,
             file_size=file_size,
-            status=0,
+            status=status,
             a3_process_status=0,
             duration_ms=max(int((end_time_utc - start_time_utc).total_seconds() * 1000), 0),
         )
@@ -89,23 +94,47 @@ class LiveATCIngestionService:
         *,
         file_name: str,
         source_url: str,
-        content: bytes,
+        byte_iter: AsyncIterator[bytes],
         now: datetime | None = None,
-    ) -> VoiceFile:
+        parsed_start_time_utc: datetime | None = None,
+        parsed_end_time_utc: datetime | None = None,
+    ) -> VoiceFile | None:
         now_utc = now or self.utc_now()
         storage_dir = Path(settings.a2_audio_storage) / "historical" / now_utc.strftime("%Y%m%d")
         storage_dir.mkdir(parents=True, exist_ok=True)
         file_path = storage_dir / file_name
-        file_path.write_bytes(content)
-        end_time = now_utc
-        start_time = now_utc
+
+        written = 0
+
+        def _open_file() -> object:
+            return open(file_path, "wb")
+
+        fp = await asyncio.to_thread(_open_file)
+        try:
+            async for chunk in byte_iter:
+                if not chunk:
+                    continue
+                await asyncio.to_thread(fp.write, chunk)
+                written += len(chunk)
+        finally:
+            await asyncio.to_thread(fp.close)
+
+        if written == 0:
+            file_path.unlink(missing_ok=True)
+            return None
+
+        extracted = self.extract_utc_range_from_filename(file_name)
+        start_time = parsed_start_time_utc or (extracted[0] if extracted else now_utc)
+        end_time = parsed_end_time_utc or (extracted[1] if extracted else now_utc)
+
         return await self.register_historical_capture(
             file_name=file_name,
             source_url=source_url,
             start_time_utc=start_time,
             end_time_utc=end_time,
             file_path=str(file_path),
-            file_size=len(content),
+            file_size=written,
+            status=1,
         )
 
     async def capture_realtime_stream(
@@ -146,16 +175,48 @@ class LiveATCIngestionService:
             return None
 
         end_utc = self.utc_now()
+        seg_start, seg_end = self.estimate_realtime_segment_bounds(now_utc, end_utc)
         duration_ms = max(int((end_utc - now_utc).total_seconds() * 1000), 0)
         return await self.register_realtime_capture(
             file_name=file_name,
             file_path=str(output_path),
-            start_time_utc=now_utc,
-            end_time_utc=end_utc,
+            start_time_utc=seg_start,
+            end_time_utc=seg_end,
             source_url=stream_url,
             file_size=written,
             duration_ms=duration_ms,
         )
+
+    @staticmethod
+    def floor_to_half_hour(value: datetime) -> datetime:
+        floored_minute = (value.minute // 30) * 30
+        return value.replace(minute=floored_minute, second=0, microsecond=0)
+
+    def estimate_realtime_segment_bounds(self, capture_start: datetime, capture_end: datetime) -> tuple[datetime, datetime]:
+        elapsed = max((capture_end - capture_start).total_seconds(), 0)
+        half_hour = settings.a2_realtime_half_hour_seconds
+        if elapsed >= half_hour * 0.95:
+            segment_start = self.floor_to_half_hour(capture_start)
+            segment_end = segment_start + timedelta(seconds=half_hour)
+            return segment_start, segment_end
+        return capture_start, capture_end
+
+    def extract_utc_range_from_filename(self, file_name: str) -> tuple[datetime, datetime] | None:
+        matched = self.HISTORICAL_NAME_PATTERN.search(file_name)
+        if not matched:
+            return None
+        month_text, day_text, year_text, hhmm_text = matched.groups()
+        try:
+            month = datetime.strptime(month_text[:3], "%b").month
+            day = int(day_text)
+            year = int(year_text)
+            hour = int(hhmm_text[:2])
+            minute = int(hhmm_text[2:])
+            start = datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+            end = start + timedelta(seconds=settings.a2_realtime_half_hour_seconds)
+            return start, end
+        except ValueError:
+            return None
 
     @staticmethod
     def utc_now() -> datetime:

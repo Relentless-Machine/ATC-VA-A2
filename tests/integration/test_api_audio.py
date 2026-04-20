@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+import os
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -28,6 +29,7 @@ async def seeded_audio(db_session):
             end_time_utc=_utc(1),
             status=1,
             a3_process_status=2,
+            file_size=1024,
             duration_ms=3600000,
             last_access_at=_utc(0),
             created_at=_utc(0),
@@ -54,17 +56,25 @@ async def seeded_audio(db_session):
 async def test_stream_audio_returns_206(client, seeded_audio):
     """时间范围命中 segment 时返回 206 流式响应。"""
     class MockFile:
+        def seek(self, *args, **kwargs):
+            return 0
+
         def read(self, *args, **kwargs):
-            return b""
+            return b"a" * min(args[0], 64) if args else b""
+
         def close(self):
             pass
 
     async def fake_to_thread(fn, *args):
+        if fn is os.path.getsize:
+            return 1024
         if hasattr(fn, "__name__") and fn.__name__ == "_open_file":
             return MockFile()
         return fn(*args)
 
-    with patch("app.services.query_service.asyncio.to_thread", side_effect=fake_to_thread):
+    with patch("app.api.routes.audio.os.path.exists", return_value=True), patch(
+        "app.services.query_service.asyncio.to_thread", side_effect=fake_to_thread
+    ):
         resp = await client.get(
             "/api/v1/audio/stream",
             params={

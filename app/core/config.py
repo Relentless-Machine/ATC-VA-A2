@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     a2_liveatc_realtime_stream_url: str = ""
     a2_realtime_capture_seconds: int = 60
     a2_realtime_capture_max_bytes: int = 2 * 1024 * 1024
+    a2_realtime_half_hour_seconds: int = 30 * 60
     a2_realtime_interval_seconds: int = 90
     a2_historical_interval_seconds: int = 15 * 60
     a2_historical_max_files_per_run: int = 5
@@ -31,6 +32,8 @@ class Settings(BaseSettings):
     )
     a2_http_accept_language: str = "en-US,en;q=0.9,zh-CN;q=0.8"
     a2_http_max_retries: int = 2
+    a2_http_backoff_base_seconds: float = 1.0
+    a2_http_backoff_max_seconds: float = 30.0
     a2_http_cookie: str = ""
 
     a3_callback_token: str = "replace-with-secure-token"

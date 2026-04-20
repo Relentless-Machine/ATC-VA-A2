@@ -212,6 +212,10 @@ full_doc.md
 # auto generate database files
 *.db
 
+# data files
+data/
+data/*
+
 # data_docx files 项目md格式的文件，用于skills
 data_docx/
 

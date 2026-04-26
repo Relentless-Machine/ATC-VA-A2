@@ -49,6 +49,24 @@ http://127.0.0.1:8000/docs
 - `POST /api/v1/ingestion/scheduler/trigger/realtime`：手动触发一次实时切片
 - `POST /api/v1/ingestion/scheduler/trigger/historical`：手动触发一次历史下载
 
+## 使用 liveatc-downloader 辅助
+
+当 LiveATC 页面解析被限制时，可用仓库内的 `liveatc-downloader/` 作为辅助工具，先探测台站标识（mount id）并下载历史音频样本，再回填到本项目配置。
+
+示例命令（在项目根目录执行）：
+
+```bash
+cd liveatc-downloader
+python main.py stations VHHH
+python main.py download vhhh5 -o ./downloads
+```
+
+说明：
+
+- `stations` 用于列出 ICAO 对应台站，输出的 `identifier` 可用于 `.env` 的 `A2_LIVEATC_MOUNT_IDS`。
+- `download` 默认下载到 `liveatc-downloader/downloads/`，可用 `-o` 指定目录。
+- `liveatc-downloader` 主要用于历史归档探测与下载；实时流采集仍通过本项目 `/api/v1/ingestion/scheduler/trigger/realtime` 完成。
+
 ## 测试
 
 默认测试命令（会跳过 `network`、`e2e`、`longrun`）：

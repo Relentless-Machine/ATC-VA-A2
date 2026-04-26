@@ -25,6 +25,8 @@ class LiveATCScheduler:
         self._last_historical_found: int = 0
         self._last_historical_skipped: int = 0
         self._last_historical_downloaded: int = 0
+        self._last_cookie_warmup_ok: bool | None = None
+        self._last_cookie_count: int = 0
         self._lock = asyncio.Lock()
 
     def _default_headers(self) -> dict[str, str]:
@@ -89,6 +91,8 @@ class LiveATCScheduler:
             "last_historical_found": self._last_historical_found,
             "last_historical_skipped": self._last_historical_skipped,
             "last_historical_downloaded": self._last_historical_downloaded,
+            "last_cookie_warmup_ok": self._last_cookie_warmup_ok,
+            "last_cookie_count": self._last_cookie_count,
         }
 
     @staticmethod
@@ -125,7 +129,10 @@ class LiveATCScheduler:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
+                    self._last_cookie_warmup_ok = await self.client.ensure_public_session_cookie(client, settings.a2_icao_code)
+                    self._last_cookie_count = self.client.cookie_count(client)
                     stream_url = await self.client.resolve_realtime_stream_url(client, settings.a2_icao_code)
+                    headers = await self.client.enrich_headers_with_session_cookie(client, headers)
                 if stream_url:
                     break
             except Exception as exc:  # noqa: BLE001
@@ -161,6 +168,8 @@ class LiveATCScheduler:
         for attempt in range(max_retries):
             try:
                 async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
+                    self._last_cookie_warmup_ok = await self.client.ensure_public_session_cookie(client, settings.a2_icao_code)
+                    self._last_cookie_count = self.client.cookie_count(client)
                     links = await self.client.list_historical_links(client, settings.a2_icao_code)
                     self._last_historical_found = len(links)
                     self._last_historical_skipped = 0

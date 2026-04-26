@@ -43,6 +43,40 @@ class LiveATCHTTPClient:
             return urljoin(source_url, href)
         return urljoin(source_url, href)
 
+    @staticmethod
+    def _cookie_header_from_client(client: httpx.AsyncClient) -> str:
+        pairs = []
+        for cookie in client.cookies.jar:
+            if cookie.name and cookie.value:
+                pairs.append(f"{cookie.name}={cookie.value}")
+        return "; ".join(pairs)
+
+    @staticmethod
+    def cookie_count(client: httpx.AsyncClient) -> int:
+        return sum(1 for cookie in client.cookies.jar if cookie.name and cookie.value)
+
+    async def ensure_public_session_cookie(self, client: httpx.AsyncClient, icao: str) -> bool:
+        seed_urls = [
+            self.base_url,
+            self.build_search_url(icao),
+            f"{self.base_url}/archive.php?m={self.mount_ids[0]}" if self.mount_ids else self.base_url,
+        ]
+        for url in seed_urls:
+            try:
+                await client.get(url, follow_redirects=True)
+            except httpx.HTTPError:
+                continue
+        return bool(self._cookie_header_from_client(client))
+
+    async def enrich_headers_with_session_cookie(
+        self, client: httpx.AsyncClient, base_headers: dict[str, str]
+    ) -> dict[str, str]:
+        merged = dict(base_headers)
+        cookie_header = self._cookie_header_from_client(client)
+        if cookie_header:
+            merged["Cookie"] = cookie_header
+        return merged
+
     async def get_search_page(self, client: httpx.AsyncClient, icao: str) -> tuple[str, str]:
         search_url = self.build_search_url(icao)
         resp = await client.get(search_url)

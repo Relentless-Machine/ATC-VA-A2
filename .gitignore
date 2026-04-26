@@ -221,3 +221,8 @@ data_docx/
 
 # agent skills
 .cursorrules
+
+# local secrets for liveatc-downloader
+liveatc-downloader/.local/
+
+.idea/

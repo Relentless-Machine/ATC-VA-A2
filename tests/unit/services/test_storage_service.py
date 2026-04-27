@@ -7,6 +7,8 @@ import pytest
 
 from app.services.storage_service import StorageManagerService
 
+pytestmark = pytest.mark.unit
+
 
 @pytest.fixture
 def mock_db():

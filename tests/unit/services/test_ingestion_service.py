@@ -1,7 +1,7 @@
 """LiveATCIngestionService 单元测试。"""
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,12 +9,12 @@ import httpx
 import pytest
 
 from app.services.ingestion_service import LiveATCIngestionService
+from tests.shared.time_utils import utc_datetime
 
 pytestmark = pytest.mark.unit
 
 
-def _utc(y, m, d, h=0, mi=0, s=0):
-    return datetime(y, m, d, h, mi, s, tzinfo=timezone.utc)
+_utc = utc_datetime
 
 
 class _StreamResponse:

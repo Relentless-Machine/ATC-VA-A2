@@ -14,6 +14,11 @@ from app.db.session import get_db
 from app.main import app
 
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
+pytest_plugins = [
+    "tests.fixtures.api",
+    "tests.fixtures.database",
+    "tests.fixtures.external_services",
+]
 
 
 @pytest.fixture

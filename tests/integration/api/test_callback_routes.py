@@ -1,44 +1,17 @@
 """callback 路由集成测试 — A-5 用户与航迹外键联调预留。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pytest
-import pytest_asyncio
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, select
 
-from app.core.config import settings
-from app.db.models import VoiceFile, VoiceSegment
+from app.db.models import VoiceSegment
 
 
-def _utc(h=0):
-    return datetime(2024, 1, 1, h, tzinfo=timezone.utc)
-
-
-@pytest_asyncio.fixture
-async def voice_file_id(db_session) -> int:
-    """前置数据：插入一条 VoiceFile，返回其 id。"""
-    result = await db_session.execute(
-        insert(VoiceFile).values(
-            file_name="cb_test.mp3",
-            file_path="/audio/cb_test.mp3",
-            icao_code="VHHH",
-            start_time_utc=_utc(0),
-            end_time_utc=_utc(1),
-            status=1,
-            a3_process_status=0,
-            duration_ms=3600000,
-            last_access_at=_utc(0),
-            created_at=_utc(0),
-            updated_at=_utc(0),
-        )
-    )
-    await db_session.commit()
-    return result.inserted_primary_key[0]
+pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
-async def test_callback_success_201(client, voice_file_id):
+async def test_callback_success_201(client, voice_file_id, a3_callback_headers):
     """合法 payload + 正确 Token → 201，segments 写入 DB。"""
     payload = {
         "voice_file_id": voice_file_id,
@@ -51,7 +24,7 @@ async def test_callback_success_201(client, voice_file_id):
     resp = await client.post(
         "/api/v1/a3/callback",
         json=payload,
-        headers={"X-A3-Token": settings.a3_callback_token},
+        headers=a3_callback_headers,
     )
     assert resp.status_code == 201
     assert resp.json()["segment_count"] == 2
@@ -79,18 +52,18 @@ async def test_callback_missing_token_401(client, voice_file_id):
 
 
 @pytest.mark.asyncio
-async def test_callback_fk_missing_404(client):
+async def test_callback_fk_missing_404(client, a3_callback_headers):
     """voice_file_id 不存在 → 404，不崩溃。"""
     resp = await client.post(
         "/api/v1/a3/callback",
         json={"voice_file_id": 99999, "process_status": 2, "segments": []},
-        headers={"X-A3-Token": settings.a3_callback_token},
+        headers=a3_callback_headers,
     )
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_callback_idempotent_upsert(client, db_session, voice_file_id):
+async def test_callback_idempotent_upsert(client, db_session, voice_file_id, a3_callback_headers):
     payload = {
         "voice_file_id": voice_file_id,
         "process_status": 2,
@@ -98,13 +71,11 @@ async def test_callback_idempotent_upsert(client, db_session, voice_file_id):
             {"relative_start": 0.0, "relative_end": 2.0, "asr_content": "first"},
         ],
     }
-    headers = {"X-A3-Token": settings.a3_callback_token}
-
-    first = await client.post("/api/v1/a3/callback", json=payload, headers=headers)
+    first = await client.post("/api/v1/a3/callback", json=payload, headers=a3_callback_headers)
     assert first.status_code == 201
 
     payload["segments"][0]["asr_content"] = "updated"
-    second = await client.post("/api/v1/a3/callback", json=payload, headers=headers)
+    second = await client.post("/api/v1/a3/callback", json=payload, headers=a3_callback_headers)
     assert second.status_code == 201
 
     count = await db_session.execute(

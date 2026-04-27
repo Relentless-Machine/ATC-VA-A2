@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
 
 import httpx
@@ -10,13 +9,6 @@ from app.core.config import settings
 from app.services.liveatc_client import LiveATCHTTPClient
 
 pytestmark = pytest.mark.unit
-
-
-async def _network_guard(coro):
-    try:
-        return await asyncio.wait_for(coro, timeout=45)
-    except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
-        pytest.skip(f"LiveATC network unavailable or too slow: {exc}")
 
 
 class _Resp:
@@ -125,7 +117,7 @@ async def test_list_historical_links_from_plain_filename_text():
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_resolve_realtime_stream_url_real_network():
+async def test_resolve_realtime_stream_url_real_network(network_guard):
     client = LiveATCHTTPClient()
     headers = {
         "User-Agent": settings.a2_http_user_agent,
@@ -134,14 +126,14 @@ async def test_resolve_realtime_stream_url_real_network():
     timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
 
     async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as http_client:
-        url = await _network_guard(client.resolve_realtime_stream_url(http_client, settings.a2_icao_code))
+        url = await network_guard(client.resolve_realtime_stream_url(http_client, settings.a2_icao_code))
 
     assert url is None or url.startswith("http")
 
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_list_historical_links_real_network():
+async def test_list_historical_links_real_network(network_guard):
     client = LiveATCHTTPClient()
     headers = {
         "User-Agent": settings.a2_http_user_agent,
@@ -150,7 +142,7 @@ async def test_list_historical_links_real_network():
     timeout = httpx.Timeout(connect=5.0, read=8.0, write=5.0, pool=5.0)
 
     async with httpx.AsyncClient(timeout=timeout, headers=headers, trust_env=False) as http_client:
-        links = await _network_guard(client.list_historical_links(http_client, settings.a2_icao_code))
+        links = await network_guard(client.list_historical_links(http_client, settings.a2_icao_code))
 
     assert isinstance(links, list)
     if links:

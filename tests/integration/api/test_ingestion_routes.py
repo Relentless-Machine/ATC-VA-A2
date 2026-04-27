@@ -1,7 +1,6 @@
 ﻿"""ingestion 路由集成测试。"""
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -12,13 +11,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.db.base import Base
 
 pytestmark = pytest.mark.integration
-
-
-async def _network_guard(coro):
-    try:
-        return await asyncio.wait_for(coro, timeout=45)
-    except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
-        pytest.skip(f"LiveATC network integration unavailable or too slow: {exc}")
 
 
 @pytest_asyncio.fixture
@@ -49,47 +41,23 @@ async def scheduler_network_isolation(tmp_path, override_settings):
 
 
 @pytest.mark.asyncio
-async def test_register_realtime_file(client):
-    payload = {
-        "file_name": "live_001.mp3",
-        "file_path": "/audio/live_001.mp3",
-        "start_time_utc": "2024-01-01T00:00:00Z",
-        "end_time_utc": "2024-01-01T00:30:00Z",
-        "source_url": "http://liveatc.example/feed",
-        "file_size": 1024,
-        "duration_ms": 1800000,
-    }
-    resp = await client.post("/api/v1/ingestion/realtime/register", json=payload)
+async def test_register_realtime_file(client, realtime_register_payload):
+    resp = await client.post("/api/v1/ingestion/realtime/register", json=realtime_register_payload)
     assert resp.status_code == 201
     assert "voice_file_id" in resp.json()
 
 
 @pytest.mark.asyncio
-async def test_register_historical_file(client):
-    payload = {
-        "file_name": "hist_001.mp3",
-        "source_url": "http://liveatc.example/archive/hist_001.mp3",
-        "start_time_utc": "2024-01-01T00:00:00Z",
-        "end_time_utc": "2024-01-01T01:00:00Z",
-    }
+async def test_register_historical_file(client, historical_register_payload):
     with patch("app.services.ingestion_service.Path.mkdir"):
-        resp = await client.post("/api/v1/ingestion/historical/register", json=payload)
+        resp = await client.post("/api/v1/ingestion/historical/register", json=historical_register_payload)
     assert resp.status_code == 201
     assert "voice_file_id" in resp.json()
 
 
 @pytest.mark.asyncio
-async def test_scheduler_start_endpoint(client):
-    status_payload = {
-        "running": True,
-        "icao_code": "VHHH",
-        "last_error": None,
-        "last_realtime_at": None,
-        "last_historical_at": None,
-        "last_historical_found": 0,
-        "last_historical_skipped": 0,
-        "last_historical_downloaded": 0,
-    }
+async def test_scheduler_start_endpoint(client, scheduler_status_payload):
+    status_payload = scheduler_status_payload(True)
     with patch("app.api.routes.ingestion.liveatc_scheduler.start", AsyncMock()) as mocked_start, patch(
         "app.api.routes.ingestion.liveatc_scheduler.status", MagicMock(return_value=status_payload)
     ):
@@ -100,17 +68,8 @@ async def test_scheduler_start_endpoint(client):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_stop_endpoint(client):
-    status_payload = {
-        "running": False,
-        "icao_code": "VHHH",
-        "last_error": None,
-        "last_realtime_at": None,
-        "last_historical_at": None,
-        "last_historical_found": 0,
-        "last_historical_skipped": 0,
-        "last_historical_downloaded": 0,
-    }
+async def test_scheduler_stop_endpoint(client, scheduler_status_payload):
+    status_payload = scheduler_status_payload(False)
     with patch("app.api.routes.ingestion.liveatc_scheduler.stop", AsyncMock()) as mocked_stop, patch(
         "app.api.routes.ingestion.liveatc_scheduler.status", MagicMock(return_value=status_payload)
     ):
@@ -158,9 +117,9 @@ async def test_trigger_realtime_error_unchanged_returns_none(client):
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_trigger_realtime_once_real_network(client, scheduler_network_isolation):
+async def test_trigger_realtime_once_real_network(client, scheduler_network_isolation, network_guard):
     with patch("app.services.ingestion_scheduler.LiveATCScheduler._http_timeout", return_value=httpx.Timeout(5.0)):
-        resp = await _network_guard(client.post("/api/v1/ingestion/scheduler/trigger/realtime"))
+        resp = await network_guard(client.post("/api/v1/ingestion/scheduler/trigger/realtime"))
     payload = resp.json()
     assert resp.status_code == 200
     assert "ok" in payload
@@ -169,9 +128,9 @@ async def test_trigger_realtime_once_real_network(client, scheduler_network_isol
 
 @pytest.mark.network
 @pytest.mark.asyncio
-async def test_trigger_historical_once_real_network(client, scheduler_network_isolation):
+async def test_trigger_historical_once_real_network(client, scheduler_network_isolation, network_guard):
     with patch("app.services.ingestion_scheduler.LiveATCScheduler._http_timeout", return_value=httpx.Timeout(5.0)):
-        resp = await _network_guard(client.post("/api/v1/ingestion/scheduler/trigger/historical"))
+        resp = await network_guard(client.post("/api/v1/ingestion/scheduler/trigger/historical"))
     payload = resp.json()
     assert resp.status_code == 200
     assert "downloaded" in payload

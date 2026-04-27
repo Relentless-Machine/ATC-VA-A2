@@ -10,6 +10,8 @@ from fastapi import HTTPException
 from app.schemas.callback import A3CallbackRequest, A3SegmentPayload
 from app.services.a3_callback_service import A3CallbackService
 
+pytestmark = pytest.mark.unit
+
 
 def _make_voice_file(fid: int = 1):
     vf = MagicMock()

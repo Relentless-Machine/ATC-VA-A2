@@ -27,17 +27,29 @@ pip install -r requirements.txt
 ```
 tests/
 ├── conftest.py
+├── fixtures/
+│   ├── api.py
+│   ├── database.py
+│   └── external_services.py
+├── shared/
+│   └── time_utils.py
 ├── unit/
-│   ├── test_ingest.py
-│   ├── test_ingestion_scheduler.py
-│   ├── test_liveatc_client.py
-│   ├── test_storage.py
-│   └── test_callback.py
+│   └── services/
+│       ├── test_a3_callback_service.py
+│       ├── test_ingestion_scheduler.py
+│       ├── test_ingestion_service.py
+│       ├── test_liveatc_client.py
+│       ├── test_query_service.py
+│       └── test_storage_service.py
 ├── integration/
-│   ├── test_api_audio.py
-│   ├── test_api_admin.py
-│   ├── test_api_ingestion.py
-│   └── test_api_callback.py
+│   ├── api/
+│   │   ├── test_admin_routes.py
+│   │   ├── test_audio_routes.py
+│   │   ├── test_callback_routes.py
+│   │   ├── test_health_routes.py
+│   │   └── test_ingestion_routes.py
+│   └── flows/
+│       └── test_ingestion_callback_audio_flow.py
 ├── e2e/
 │   └── test_stability_liveatc.py
 └── loadtest/
@@ -48,6 +60,18 @@ tests/
     │   └── long_stability.py
     └── reports/
 ```
+
+说明：
+
+- `conftest.py` 仅保留跨全局生命周期夹具（数据库引擎、会话、HTTP client、配置覆盖）。
+- `fixtures/` 放业务域可复用测试夹具（如 `seeded_audio`、`voice_file_id`）。
+- `fixtures/api.py` 放接口层复用夹具（如 callback headers、请求 payload 模板）。
+- `fixtures/database.py` 放数据库种子夹具（如 VoiceFile/VoiceSegment 数据准备）。
+- `fixtures/external_services.py` 放外部服务辅助夹具（如 network_guard、scheduler status payload）。
+- `shared/` 放可复用辅助函数（如 UTC 时间构造）。
+- `unit/services` 与 `app/services` 按语义一一对应，便于快速定位测试。
+- `integration/api` 按路由域组织，避免文件命名歧义。
+- `integration/flows` 用于跨路由链路测试，验证关键业务流程端到端衔接。
 
 ## 常用命令
 

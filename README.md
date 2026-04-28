@@ -14,6 +14,8 @@ A-2模块基础工程，使用Python + FastAPI
 - 调度链路存储熔断（空间不足时跳过下载并触发清理）
 - HTTP请求指数退避重试（含抖动）
 - A-3回调切片幂等写入（同文件+同偏移区间更新，不重复插入）
+- **A-3集成** - 处理请求、状态查询、失败重试、标注同步（新增）
+- **A-5集成** - 轨迹查询、标注者查询、标注同步、跨模块报告（新增）
 
 ## 启动
 
@@ -118,6 +120,40 @@ locust -f tests/loadtest/scenarios/long_stability.py --host=http://127.0.0.1:800
 python tests/loadtest/soak_runner.py --base-url http://127.0.0.1:8000 --duration-minutes 120 --interval-seconds 30
 ```
 
+## A-3 和 A-5 模块集成
+
+A-2模块现已支持与A-3预处理模块和A-5数据库模块的完整集成。详见 [A3_A5_INTEGRATION.md](A3_A5_INTEGRATION.md)
+
+### A-3集成接口
+
+- `POST /api/v1/a3/request-processing` - 发起处理请求
+- `GET /api/v1/a3/status/{voice_file_id}` - 查询处理状态
+- `POST /api/v1/a3/retry/{voice_file_id}` - 重试失败的处理（指数退避）
+- `POST /api/v1/a3/sync-annotations/{voice_file_id}` - 同步标注状态
+- `GET /api/v1/a3/queue` - 查看处理队列
+
+### A-5集成接口
+
+- `GET /api/v1/tracks/{track_id}/metadata` - 获取轨迹元数据
+- `GET /api/v1/users/{author_id}/metadata` - 获取用户元数据
+- `GET /api/v1/audio/by-track/{track_id}` - 按轨迹查询音频
+- `GET /api/v1/audio/by-annotator/{author_id}` - 按标注者查询音频
+- `POST /api/v1/a5/sync-annotations-to-a5/{voice_file_id}` - 同步标注到A-5
+- `POST /api/v1/a5/sync-annotations-from-a5/{voice_file_id}` - 从A-5接收更新
+- `GET /api/v1/a5/cross-module-report` - 生成系统报告
+
+### 集成特性
+
+- A-3处理状态追踪（未启动 → 处理中 → 完成/失败）
+- 自动重试机制，带指数退避和随机抖动
+- 段落标注状态同步
+- 按轨迹ID（A-1航迹）查询相关音频
+- 按标注者ID查询标注记录
+- 双向标注数据同步（推送和拉取）
+- 跨模块系统报告（文件数、处理率、标注率等）
+- 完整的测试覆盖（9个新增测试）
+
 ## 后续任务
 
-- 接入A-5用户与航迹外键联调（`track_id`、`author_id`）
+- [ ] 接入A-1航迹数据实时同步（track_id自动匹配）
+- [ ] A-4前端界面对接（音频流播放 + 轨迹展示 + 标注编辑）

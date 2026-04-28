@@ -39,6 +39,9 @@ class Settings(BaseSettings):
     a3_callback_token: str = "replace-with-secure-token"
     a3_service_base_url: str = "http://localhost:9000"
 
+    api_token: str = "replace-with-secure-api-token"
+    a5_service_base_url: str = "http://localhost:8080"
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", case_sensitive=False)
 
 

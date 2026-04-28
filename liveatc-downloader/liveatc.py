@@ -2,6 +2,7 @@ import re
 from pathlib import Path
 from urllib.parse import quote
 from typing import Generator
+from datetime import datetime, timedelta
 
 import requests
 import urllib.request
@@ -147,29 +148,247 @@ def _infer_archive_dir(station: str, archive_identifier: str) -> str:
     return station_token or "unknown"
 
 
-def download_archive(station, date, time, output_dir=".", user_agent: str | None = None, cookie: str | None = None):
-    page = _request_liveatc(
-        f'https://www.liveatc.net/archive.php?m={station}',
-        user_agent=user_agent,
-        cookie=cookie,
-    )
+def download_archive(station, date, time, output_dir=".", user_agent: str | None = None, cookie: str | None = None) -> dict:
+    """
+    下载 LiveATC 历史音频文件。
+    
+    Args:
+        station: 电台标识符，例如 'kpdx5'
+        date: 日期，格式 'Oct-01-2021'
+        time: Zulu 时间，格式 '2000Z'
+        output_dir: 输出目录，默认为当前目录
+        user_agent: 自定义 User-Agent
+        cookie: 自定义 Cookie
+    
+    Returns:
+        包含下载结果的字典，格式为:
+        {
+            'success': bool,
+            'filename': str,
+            'filepath': str,
+            'url': str,
+            'size': int (成功时),
+            'error': str (失败时)
+        }
+    """
+    try:
+        # 获取档案页面
+        page = _request_liveatc(
+            f'https://www.liveatc.net/archive.php?m={station}',
+            user_agent=user_agent,
+            cookie=cookie,
+        )
 
-    if page is None:
-        raise Exception("所有请求方式均失败，无法获取页面。")
+        if page is None:
+            return {
+                'success': False,
+                'error': '所有请求方式均失败，无法获取页面'
+            }
 
-    page.raise_for_status()
-    soup = BeautifulSoup(page.content, 'html.parser')
-    archive_identifer = soup.find('option', selected=True).attrs['value']
+        page.raise_for_status()
+        soup = BeautifulSoup(page.content, 'html.parser')
+        
+        # 查找选中的选项来获取档案标识符
+        selected_option = soup.find('option', selected=True)
+        if selected_option is None:
+            return {
+                'success': False,
+                'error': '无法找到选中的电台选项'
+            }
+        
+        archive_identifier = selected_option.attrs.get('value')
+        if not archive_identifier:
+            return {
+                'success': False,
+                'error': '选中的电台选项缺少 value 属性'
+            }
 
-    filename = f'{archive_identifer}-{date}-{time}.mp3'
-    archive_dir = _infer_archive_dir(station=station, archive_identifier=archive_identifer)
+        filename = f'{archive_identifier}-{date}-{time}.mp3'
+        archive_dir = _infer_archive_dir(station=station, archive_identifier=archive_identifier)
 
-    out_dir = Path(output_dir).expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / filename
-    encoded_name = quote(filename, safe="-_.()")
-    url = f'https://archive.liveatc.net/{archive_dir}/{encoded_name}'
-    print(f"正在下载: {url}")
+        # 创建输出目录
+        out_dir = Path(output_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / filename
+        
+        # 检查文件是否已存在
+        if path.exists():
+            return {
+                'success': False,
+                'filename': filename,
+                'filepath': str(path),
+                'error': '文件已存在'
+            }
+        
+        # 构建下载 URL
+        encoded_name = quote(filename, safe="-_.()")
+        url = f'https://archive.liveatc.net/{archive_dir}/{encoded_name}'
+        print(f"正在下载: {url}")
 
-    urllib.request.urlretrieve(url, str(path))
-    print(f"成功保存到: {path}")
+        # 下载文件
+        try:
+            urllib.request.urlretrieve(url, str(path))
+        except Exception as e:
+            # 清理部分下载的文件
+            if path.exists():
+                path.unlink()
+            return {
+                'success': False,
+                'filename': filename,
+                'filepath': str(path),
+                'url': url,
+                'error': f'下载失败: {str(e)}'
+            }
+
+        # 验证下载的文件
+        if not path.exists():
+            return {
+                'success': False,
+                'filename': filename,
+                'filepath': str(path),
+                'url': url,
+                'error': '下载完成但文件不存在'
+            }
+
+        file_size = path.stat().st_size
+        if file_size == 0:
+            path.unlink()
+            return {
+                'success': False,
+                'filename': filename,
+                'filepath': str(path),
+                'url': url,
+                'error': '下载的文件大小为 0'
+            }
+
+        print(f"✓ 成功保存到: {path} ({file_size} 字节)")
+        return {
+            'success': True,
+            'filename': filename,
+            'filepath': str(path),
+            'url': url,
+            'size': file_size
+        }
+
+    except Exception as e:
+        return {
+            'success': False,
+            'error': f'未预期的错误: {str(e)}'
+        }
+
+
+def list_historical_archives(station: str, user_agent: str | None = None, cookie: str | None = None) -> list[dict]:
+    """
+    列出特定电台的所有可用历史音频档案。
+    
+    Args:
+        station: 电台标识符
+        user_agent: 自定义 User-Agent
+        cookie: 自定义 Cookie
+    
+    Returns:
+        包含档案信息的字典列表，每个字典包含:
+        {
+            'filename': str,
+            'date': str,
+            'time': str,
+            'size': int (可选),
+            'url': str
+        }
+    """
+    try:
+        page = _request_liveatc(
+            f'https://www.liveatc.net/archive.php?m={station}',
+            user_agent=user_agent,
+            cookie=cookie,
+        )
+
+        if page is None:
+            print("错误：无法获取档案列表页面")
+            return []
+
+        soup = BeautifulSoup(page.content, 'html.parser')
+        archives = []
+
+        # 从表格中提取档案链接
+        for link in soup.find_all('a', href=re.compile(r'archive\.liveatc\.net|\.mp3')):
+            href = link.get('href', '')
+            text = link.get_text(strip=True)
+            
+            if '.mp3' not in href.lower():
+                continue
+
+            # 尝试从链接文本中提取日期和时间
+            match = re.search(r'([A-Za-z]{3})-(\d{1,2})-(\d{4})-(\d{4})Z', text)
+            if match:
+                month, day, year, time = match.groups()
+                archives.append({
+                    'filename': text,
+                    'month': month,
+                    'day': day,
+                    'year': year,
+                    'time': time,
+                    'url': href if href.startswith('http') else f"https://archive.liveatc.net{href}",
+                })
+
+        return archives
+
+    except Exception as e:
+        print(f"错误：无法列出档案: {str(e)}")
+        return []
+
+
+def download_date_range(
+    station: str,
+    start_date: datetime,
+    end_date: datetime,
+    output_dir: str = ".",
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    times: list[str] | None = None,
+) -> list[dict]:
+    """
+    下载指定日期范围内的历史音频。
+    
+    Args:
+        station: 电台标识符
+        start_date: 开始日期
+        end_date: 结束日期
+        output_dir: 输出目录
+        user_agent: 自定义 User-Agent
+        cookie: 自定义 Cookie
+        times: 要下载的 Zulu 时间列表，例如 ['0000Z', '0030Z']。如果为 None，则下载所有时间
+    
+    Returns:
+        下载结果列表
+    """
+    results = []
+    current_date = start_date
+
+    # 默认下载每小时的各种时段
+    if times is None:
+        times = [f"{h:02d}{m:02d}Z" for h in range(24) for m in (0, 30)]
+
+    while current_date <= end_date:
+        date_str = current_date.strftime('%b-%d-%Y')
+        for time_str in times:
+            try:
+                print(f"\n下载 {station} {date_str} {time_str}...")
+                result = download_archive(station, date_str, time_str, output_dir, user_agent, cookie)
+                results.append(result)
+                if result['success']:
+                    print(f"✓ 成功: {result['filename']}")
+                else:
+                    print(f"✗ 失败: {result.get('error', '未知错误')}")
+            except Exception as e:
+                print(f"✗ 异常: {str(e)}")
+                results.append({'success': False, 'error': str(e)})
+
+        current_date += timedelta(days=1)
+
+    # 统计结果
+    successful = sum(1 for r in results if r.get('success'))
+    total = len(results)
+    print(f"\n下载完成: {successful}/{total} 成功")
+    
+    return results

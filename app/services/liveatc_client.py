@@ -8,6 +8,10 @@ import httpx
 
 from app.core.config import settings
 
+try:
+    import cloudscraper
+except Exception:  # pragma: no cover - optional dependency
+    cloudscraper = None
 
 @dataclass
 class HistoricalAudioLink:
@@ -65,8 +69,35 @@ class LiveATCHTTPClient:
             try:
                 await client.get(url, follow_redirects=True)
             except httpx.HTTPError:
+                # 尝试 cloudscraper 回退以获取会话 cookie
+                if cloudscraper is not None:
+                    try:
+                        sc = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+                        sc.get(url, timeout=10)
+                    except Exception:
+                        pass
                 continue
         return bool(self._cookie_header_from_client(client))
+
+    def _cloudscraper_get_text(self, url: str, headers: dict | None = None) -> tuple[int, str, str | None]:
+        """同步 cloudscraper 请求，返回 (status_code, text, cookie_header)"""
+        if cloudscraper is None:
+            return 0, "", None
+        try:
+            sc = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+            if headers:
+                sc.headers.update(headers)
+            r = sc.get(url, timeout=20)
+            cookie = None
+            if hasattr(sc, 'cookies'):
+                # 构建 Cookie header
+                try:
+                    cookie = "; ".join(f"{c.name}={c.value}" for c in sc.cookies.jar if c.name and c.value)
+                except Exception:
+                    cookie = None
+            return getattr(r, 'status_code', 0) or 0, getattr(r, 'text', '') or '', cookie
+        except Exception:
+            return 0, "", None
 
     async def enrich_headers_with_session_cookie(
         self, client: httpx.AsyncClient, base_headers: dict[str, str]
@@ -79,9 +110,20 @@ class LiveATCHTTPClient:
 
     async def get_search_page(self, client: httpx.AsyncClient, icao: str) -> tuple[str, str]:
         search_url = self.build_search_url(icao)
-        resp = await client.get(search_url)
-        resp.raise_for_status()
-        return search_url, resp.text
+        try:
+            resp = await client.get(search_url)
+            resp.raise_for_status()
+            return search_url, resp.text
+        except httpx.HTTPStatusError as exc:
+            # 如果被 403 拦截，尝试 cloudscraper 回退（同步）
+            if cloudscraper is not None and getattr(exc.response, 'status_code', None) == 403:
+                status, text, cookie = self._cloudscraper_get_text(search_url, headers={
+                    'User-Agent': settings.a2_http_user_agent,
+                    'Referer': self.base_url,
+                })
+                if status and status < 400:
+                    return search_url, text
+            raise
 
     async def resolve_realtime_stream_url(self, client: httpx.AsyncClient, icao: str) -> str | None:
         if self.realtime_stream_override:
@@ -89,7 +131,18 @@ class LiveATCHTTPClient:
 
         for mount in self.mount_ids:
             for playlist_url in (f"{self.base_url}/play/{mount}.pls", f"{self.base_url}/play/{mount}.m3u"):
-                resp = await client.get(playlist_url, follow_redirects=True)
+                try:
+                    resp = await client.get(playlist_url, follow_redirects=True)
+                except httpx.HTTPError:
+                    # 回退到 cloudscraper 同步请求
+                    if cloudscraper is not None:
+                        status, text, cookie = self._cloudscraper_get_text(playlist_url, headers={'User-Agent': settings.a2_http_user_agent})
+                        if status and status < 400:
+                            resp = type('R', (), {'status_code': status, 'text': text})()
+                        else:
+                            continue
+                    else:
+                        continue
                 if resp.status_code >= 400:
                     continue
                 playlist_urls = re.findall(r"https?://[^\s'\"<>]+", resp.text)
@@ -107,6 +160,13 @@ class LiveATCHTTPClient:
                 if "listen.php?" in href.lower():
                     candidate_listen_pages.append(self._to_abs(href, search_url))
         except httpx.HTTPStatusError:
+            # 如果 cloudscraper 可用，尝试直接用 cloudscraper 拉取 search page
+            if cloudscraper is not None:
+                status, text, cookie = self._cloudscraper_get_text(self.build_search_url(icao), headers={'User-Agent': settings.a2_http_user_agent})
+                if status and status < 400:
+                    for href in self._extract_hrefs(text):
+                        if "listen.php?" in href.lower():
+                            candidate_listen_pages.append(self._to_abs(href, self.build_search_url(icao)))
             pass
 
         for listen_url in candidate_listen_pages:
@@ -148,7 +208,18 @@ class LiveATCHTTPClient:
             pass
         links: dict[str, HistoricalAudioLink] = {}
         for page_url in candidate_pages:
-            resp = await client.get(page_url, follow_redirects=True)
+            try:
+                resp = await client.get(page_url, follow_redirects=True)
+            except httpx.HTTPError:
+                # cloudscraper 回退
+                if cloudscraper is not None:
+                    status, text, cookie = self._cloudscraper_get_text(page_url, headers={'User-Agent': settings.a2_http_user_agent})
+                    if status and status < 400:
+                        resp = type('R', (), {'status_code': status, 'text': text})()
+                    else:
+                        continue
+                else:
+                    continue
             if resp.status_code >= 400:
                 continue
             for href in self._extract_hrefs(resp.text):

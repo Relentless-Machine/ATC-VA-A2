@@ -1,22 +1,13 @@
 """StorageManagerService 单元测试 — 完全隔离磁盘 IO 和数据库操作。"""
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.storage_service import StorageManagerService
 
 pytestmark = pytest.mark.unit
-
-
-@pytest.fixture
-def mock_db():
-    db = AsyncMock()
-    db.execute = AsyncMock()
-    db.commit = AsyncMock()
-    db.add = MagicMock()
-    return db
 
 
 @pytest.mark.asyncio

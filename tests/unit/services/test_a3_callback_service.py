@@ -23,18 +23,6 @@ def _make_voice_file(fid: int = 1):
     return vf
 
 
-@pytest.fixture
-def mock_db():
-    db = AsyncMock()
-    db.add = MagicMock()
-    execute_result = MagicMock()
-    execute_result.scalar_one_or_none.return_value = None
-    db.execute = AsyncMock(return_value=execute_result)
-    db.commit = AsyncMock()
-    db.refresh = AsyncMock()
-    return db
-
-
 @pytest.mark.asyncio
 async def test_handle_callback_inserts_segments(mock_db):
     """正常回调：插入 2 条 segment，返回正确 segment_count。"""

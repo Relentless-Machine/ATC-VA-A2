@@ -51,6 +51,7 @@ async def test_liveatc_realtime_long_stability(client, longrun_scheduler_isolati
     iteration = 0
 
     while monotonic() < deadline:
+        loop_start = monotonic()
         iteration += 1
 
         realtime_resp = await client.post("/api/v1/ingestion/scheduler/trigger/realtime")
@@ -64,4 +65,7 @@ async def test_liveatc_realtime_long_stability(client, longrun_scheduler_isolati
         assert status_resp.status_code == 200
         assert "running" in status_resp.json()
 
-        await asyncio.sleep(max(interval_seconds, 1))
+        sleep_until = loop_start + max(interval_seconds, 1)
+        remaining = sleep_until - monotonic()
+        if remaining > 0:
+            await asyncio.sleep(remaining)

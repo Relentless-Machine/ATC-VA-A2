@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -51,16 +51,6 @@ class _AsyncClientContext:
 
     def stream(self, method: str, url: str, follow_redirects: bool = True):
         return self._stream_response
-
-
-@pytest.fixture
-def mock_db():
-    db = AsyncMock()
-    db.add = MagicMock()
-    db.commit = AsyncMock()
-    db.refresh = AsyncMock(side_effect=lambda obj: setattr(obj, "id", 1))
-    db.execute = AsyncMock()
-    return db
 
 
 @pytest.fixture

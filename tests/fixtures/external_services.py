@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -10,9 +11,15 @@ import pytest
 
 @pytest.fixture
 def network_guard() -> Callable[[Awaitable[Any]], Awaitable[Any]]:
+    try:
+        timeout_seconds = float(os.getenv("A2_TEST_NETWORK_TIMEOUT", "30"))
+    except ValueError:
+        timeout_seconds = 30
+    timeout_seconds = max(timeout_seconds, 1.0)
+
     async def _network_guard(coro: Awaitable[Any]) -> Any:
         try:
-            return await asyncio.wait_for(coro, timeout=45)
+            return await asyncio.wait_for(coro, timeout=timeout_seconds)
         except (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError, httpx.RequestError) as exc:
             pytest.skip(f"LiveATC network unavailable or too slow: {exc}")
 

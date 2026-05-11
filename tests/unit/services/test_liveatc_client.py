@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -74,12 +74,16 @@ async def test_resolve_realtime_stream_url_direct_fallback():
         return _Resp("not found", status_code=404, url=url)
 
     http_client.get = AsyncMock(side_effect=_fake_get)
-    url = await client.resolve_realtime_stream_url(http_client, "VHHH")
+    with patch.object(client, "_probe_stream_url", new=AsyncMock(return_value=True)) as mocked_probe:
+        url = await client.resolve_realtime_stream_url(http_client, "VHHH")
+
     assert url == "https://d.liveatc.net/vhhh5"
+    mocked_probe.assert_awaited_once_with(http_client, "https://d.liveatc.net/vhhh5")
 
 
 @pytest.mark.asyncio
-async def test_list_historical_links():
+async def test_list_historical_links(override_settings):
+    override_settings(a2_liveatc_archive_file_prefixes="")
     client = LiveATCHTTPClient()
     http_client = AsyncMock()
     http_client.get = AsyncMock(
@@ -98,7 +102,8 @@ async def test_list_historical_links():
 
 
 @pytest.mark.asyncio
-async def test_list_historical_links_from_plain_filename_text():
+async def test_list_historical_links_from_plain_filename_text(override_settings):
+    override_settings(a2_liveatc_archive_file_prefixes="")
     client = LiveATCHTTPClient()
     http_client = AsyncMock()
     http_client.get = AsyncMock(
@@ -111,8 +116,31 @@ async def test_list_historical_links_from_plain_filename_text():
     links = await client.list_historical_links(http_client, "VHHH")
     urls = sorted(item.url for item in links)
     assert (
-        "https://archive.liveatc.net/vhhh5/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3" in urls
+        "https://archive.liveatc.net/vhhh/VHHH5-App-Dep-Dir-Zone-Apr-13-2026-0000Z.mp3" in urls
     )
+
+
+@pytest.mark.asyncio
+async def test_list_historical_links_generates_recent_archive_candidates(override_settings):
+    override_settings(
+        a2_liveatc_archive_file_prefixes="VHHH5-App-Dep-Dir-Zone",
+        a2_historical_candidate_slots=2,
+    )
+    client = LiveATCHTTPClient()
+    http_client = AsyncMock()
+    http_client.get = AsyncMock(
+        side_effect=[
+            _Resp("blocked", status_code=403, url="https://www.liveatc.net/search/?icao=VHHH"),
+            _Resp("blocked", status_code=403, url="https://www.liveatc.net/archive.php?m=vhhh5"),
+            _Resp("index"),
+        ]
+    )
+
+    links = await client.list_historical_links(http_client, "VHHH")
+
+    assert len(links) == 2
+    assert all(item.url.startswith("https://archive.liveatc.net/vhhh/") for item in links)
+    assert all(item.file_name.startswith("VHHH5-App-Dep-Dir-Zone-") for item in links)
 
 
 @pytest.mark.network

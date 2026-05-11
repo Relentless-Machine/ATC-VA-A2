@@ -25,6 +25,8 @@ class LiveATCScheduler:
         self._last_historical_found: int = 0
         self._last_historical_skipped: int = 0
         self._last_historical_downloaded: int = 0
+        self._last_historical_failed: int = 0
+        self._last_historical_first_failed_status: int | None = None
         self._last_cookie_warmup_ok: bool | None = None
         self._last_cookie_count: int = 0
         self._lock = asyncio.Lock()
@@ -91,6 +93,8 @@ class LiveATCScheduler:
             "last_historical_found": self._last_historical_found,
             "last_historical_skipped": self._last_historical_skipped,
             "last_historical_downloaded": self._last_historical_downloaded,
+            "last_historical_failed": self._last_historical_failed,
+            "last_historical_first_failed_status": self._last_historical_first_failed_status,
             "last_cookie_warmup_ok": self._last_cookie_warmup_ok,
             "last_cookie_count": self._last_cookie_count,
         }
@@ -102,18 +106,20 @@ class LiveATCScheduler:
     async def _realtime_loop(self) -> None:
         while self._running:
             try:
+                await self._sleep_human_delay()
                 await self._run_realtime_once()
             except Exception as exc:  # noqa: BLE001
                 self._last_error = f"realtime: {exc}"
-            await asyncio.sleep(settings.a2_realtime_interval_seconds)
+            await asyncio.sleep(self._interval_delay(settings.a2_realtime_interval_seconds))
 
     async def _historical_loop(self) -> None:
         while self._running:
             try:
+                await self._sleep_human_delay()
                 await self._run_historical_once()
             except Exception as exc:  # noqa: BLE001
                 self._last_error = f"historical: {exc}"
-            await asyncio.sleep(settings.a2_historical_interval_seconds)
+            await asyncio.sleep(self._interval_delay(settings.a2_historical_interval_seconds))
 
     async def _run_realtime_once(self) -> bool:
         async with SessionLocal() as db:
@@ -160,6 +166,8 @@ class LiveATCScheduler:
                 self._last_historical_found = 0
                 self._last_historical_skipped = 0
                 self._last_historical_downloaded = 0
+                self._last_historical_failed = 0
+                self._last_historical_first_failed_status = None
                 return 0
 
         headers = self._default_headers()
@@ -174,18 +182,27 @@ class LiveATCScheduler:
                     self._last_historical_found = len(links)
                     self._last_historical_skipped = 0
                     self._last_historical_downloaded = 0
+                    self._last_historical_failed = 0
+                    self._last_historical_first_failed_status = None
                     if not links:
                         return 0
                     saved = 0
                     skipped = 0
+                    failed = 0
+                    first_failed_status: int | None = None
                     async with SessionLocal() as db:
                         svc = LiveATCIngestionService(db)
                         for item in links[: settings.a2_historical_max_files_per_run]:
                             if await svc.has_source_url(item.url):
                                 skipped += 1
                                 continue
+                            if saved > 0 or skipped > 0:
+                                await self._sleep_download_gap()
                             async with client.stream("GET", item.url, follow_redirects=True) as resp:
                                 if resp.status_code >= 400:
+                                    failed += 1
+                                    if first_failed_status is None:
+                                        first_failed_status = resp.status_code
                                     continue
                                 row = await svc.register_historical_download(
                                     file_name=item.file_name,
@@ -194,10 +211,18 @@ class LiveATCScheduler:
                                 )
                                 if row is not None:
                                     saved += 1
+                                else:
+                                    failed += 1
                     self._last_historical_skipped = skipped
                     self._last_historical_downloaded = saved
+                    self._last_historical_failed = failed
+                    self._last_historical_first_failed_status = first_failed_status
                     self._last_historical_at = datetime.now(timezone.utc)
-                    self._last_error = None
+                    self._last_error = (
+                        None
+                        if saved > 0 or failed == 0
+                        else f"historical download failed for {failed} candidate(s); first status={first_failed_status}"
+                    )
                     return saved
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
@@ -206,6 +231,37 @@ class LiveATCScheduler:
         if last_exc is not None:
             raise last_exc
         return 0
+
+    async def _sleep_human_delay(self) -> None:
+        delay = self._bounded_random_delay(
+            settings.a2_liveatc_human_delay_min_seconds,
+            settings.a2_liveatc_human_delay_max_seconds,
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    async def _sleep_download_gap(self) -> None:
+        delay = self._bounded_random_delay(
+            settings.a2_liveatc_download_gap_min_seconds,
+            settings.a2_liveatc_download_gap_max_seconds,
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _interval_delay(self, base_seconds: int | float) -> float:
+        base = max(float(base_seconds), 0.0)
+        jitter = max(float(settings.a2_scheduler_interval_jitter_seconds), 0.0)
+        if jitter == 0:
+            return base
+        return max(base + random.uniform(-jitter, jitter), 0.0)
+
+    @staticmethod
+    def _bounded_random_delay(min_seconds: int | float, max_seconds: int | float) -> float:
+        lower = max(float(min_seconds), 0.0)
+        upper = max(float(max_seconds), lower)
+        if upper == 0:
+            return 0.0
+        return random.uniform(lower, upper)
 
     def _backoff_delay(self, attempt: int) -> float:
         base = max(settings.a2_http_backoff_base_seconds, 0.1)

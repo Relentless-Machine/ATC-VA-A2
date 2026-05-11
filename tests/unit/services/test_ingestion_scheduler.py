@@ -82,6 +82,24 @@ def test_backoff_delay_respects_range_and_max():
     assert delay_3 >= delay_0
 
 
+def test_interval_delay_applies_bounded_jitter(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_scheduler_interval_jitter_seconds=300)
+
+    with patch("app.services.ingestion_scheduler.random.uniform", return_value=-120):
+        assert scheduler._interval_delay(1800) == 1680
+
+
+def test_bounded_random_delay_normalizes_invalid_range():
+    scheduler = LiveATCScheduler()
+
+    with patch("app.services.ingestion_scheduler.random.uniform", return_value=2.5) as mocked_random:
+        delay = scheduler._bounded_random_delay(-5, 2)
+
+    assert delay == 2.5
+    mocked_random.assert_called_once_with(0.0, 2.0)
+
+
 def test_status_formats_datetime_fields():
     scheduler = LiveATCScheduler()
     now = datetime.now(timezone.utc)

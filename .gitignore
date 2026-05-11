@@ -226,3 +226,15 @@ data_docx/
 liveatc-downloader/.local/
 
 .idea/
+
+# ATC-VA local runtime artifacts
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.mp3
+downloads/
+liveatc-downloader/downloads/
+liveatc-downloader/*.mp3
+*cookie*.txt
+*Cookie*.txt

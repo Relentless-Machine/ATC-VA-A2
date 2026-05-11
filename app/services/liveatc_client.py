@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.parse import urljoin
 
 import httpx
@@ -21,12 +23,19 @@ class LiveATCHTTPClient:
     HREF_PATTERN = re.compile(r'href=["\']([^"\']+)["\']', re.IGNORECASE)
     MP3_PATTERN = re.compile(r"\.mp3($|\?)", re.IGNORECASE)
     MP3_FILE_PATTERN = re.compile(r"([A-Za-z0-9._-]+\.mp3)\b", re.IGNORECASE)
+    SELECTED_OPTION_PATTERN = re.compile(
+        r"<option\b[^>]*\bselected\b[^>]*\bvalue=[\"']?([^\"'>\s]+)",
+        re.IGNORECASE,
+    )
 
     def __init__(self):
         self.base_url = settings.a2_liveatc_base_url.rstrip("/")
         self.archive_base_url = settings.a2_liveatc_archive_base_url.rstrip("/")
         self.search_tpl = settings.a2_liveatc_search_url
         self.mount_ids = [item.strip() for item in settings.a2_liveatc_mount_ids.split(",") if item.strip()]
+        self.archive_file_prefixes = [
+            item.strip() for item in settings.a2_liveatc_archive_file_prefixes.split(",") if item.strip()
+        ]
         self.realtime_stream_override = settings.a2_liveatc_realtime_stream_url.strip()
 
     def build_search_url(self, icao: str) -> str:
@@ -54,6 +63,54 @@ class LiveATCHTTPClient:
     @staticmethod
     def cookie_count(client: httpx.AsyncClient) -> int:
         return sum(1 for cookie in client.cookies.jar if cookie.name and cookie.value)
+
+    @staticmethod
+    def _infer_archive_dir(station: str, archive_identifier: str) -> str:
+        prefix = archive_identifier.split("-", 1)[0].strip().lower()
+        if len(prefix) == 4 and prefix.isalnum():
+            return prefix
+        station_token = re.split(r"[_-]", station.strip().lower())[0]
+        letters = "".join(ch for ch in station_token if ch.isalpha())
+        if len(letters) >= 4:
+            return letters[:4]
+        return station_token or "unknown"
+
+    @classmethod
+    def _selected_archive_identifier(cls, html: str) -> str | None:
+        matched = cls.SELECTED_OPTION_PATTERN.search(html)
+        return matched.group(1).strip() if matched else None
+
+    @staticmethod
+    def _last_finished_half_hour(now: datetime | None = None) -> datetime:
+        value = now or datetime.now(timezone.utc)
+        value = value - timedelta(minutes=30)
+        floored_minute = (value.minute // 30) * 30
+        return value.replace(minute=floored_minute, second=0, microsecond=0)
+
+    def _recent_archive_candidates(
+        self, *, station: str, archive_identifier: str, now: datetime | None = None
+    ) -> list[HistoricalAudioLink]:
+        archive_dir = self._infer_archive_dir(station=station, archive_identifier=archive_identifier)
+        slots = max(settings.a2_historical_candidate_slots, 1)
+        start_slot = self._last_finished_half_hour(now)
+        candidates: list[HistoricalAudioLink] = []
+        for index in range(slots):
+            slot = start_slot - timedelta(minutes=30 * index)
+            file_name = f"{archive_identifier}-{slot.strftime('%b-%d-%Y-%H%MZ')}.mp3"
+            encoded_name = quote(file_name, safe="-_.()")
+            candidates.append(
+                HistoricalAudioLink(
+                    url=f"{self.archive_base_url}/{archive_dir}/{encoded_name}",
+                    file_name=file_name,
+                )
+            )
+        return candidates
+
+    @staticmethod
+    def _mount_from_archive_page_url(page_url: str) -> str:
+        parsed = urlparse(page_url)
+        mount = parse_qs(parsed.query).get("m", [""])[0].strip()
+        return mount or page_url
 
     async def ensure_public_session_cookie(self, client: httpx.AsyncClient, icao: str) -> bool:
         seed_urls = [
@@ -128,10 +185,21 @@ class LiveATCHTTPClient:
         for mount in self.mount_ids:
             # 最后兜底：常见直连模式（部分节点可用）。
             for direct_url in (f"https://d.liveatc.net/{mount}", f"https://d.liveatc.net/{mount}.mp3"):
-                probe = await client.get(direct_url, follow_redirects=True)
-                if probe.status_code < 400:
+                if await self._probe_stream_url(client, direct_url):
                     return direct_url
         return None
+
+    @staticmethod
+    async def _probe_stream_url(client: httpx.AsyncClient, url: str) -> bool:
+        try:
+            async with client.stream("GET", url, follow_redirects=True) as resp:
+                if resp.status_code >= 400:
+                    return False
+                async for chunk in resp.aiter_bytes(chunk_size=1):
+                    return bool(chunk)
+                return True
+        except httpx.HTTPError:
+            return False
 
     async def list_historical_links(self, client: httpx.AsyncClient, icao: str) -> list[HistoricalAudioLink]:
         candidate_pages = [f"{self.base_url}/archive.php?m={mount}" for mount in self.mount_ids]
@@ -162,6 +230,16 @@ class LiveATCHTTPClient:
             for file_name in {m.group(1) for m in self.MP3_FILE_PATTERN.finditer(resp.text)}:
                 for mount in self.mount_ids:
                     if file_name.lower().startswith(mount.lower()):
-                        absolute = f"{self.archive_base_url}/{mount}/{file_name}"
+                        archive_dir = self._infer_archive_dir(station=mount, archive_identifier=file_name)
+                        absolute = f"{self.archive_base_url}/{archive_dir}/{quote(file_name, safe='-_.()')}"
                         links[absolute] = HistoricalAudioLink(url=absolute, file_name=file_name)
+            if "archive.php" in page_url.lower():
+                archive_identifier = self._selected_archive_identifier(resp.text)
+                if archive_identifier:
+                    station = self._mount_from_archive_page_url(page_url)
+                    for item in self._recent_archive_candidates(station=station, archive_identifier=archive_identifier):
+                        links.setdefault(item.url, item)
+        for mount, archive_identifier in zip(self.mount_ids, self.archive_file_prefixes):
+            for item in self._recent_archive_candidates(station=mount, archive_identifier=archive_identifier):
+                links.setdefault(item.url, item)
         return list(links.values())

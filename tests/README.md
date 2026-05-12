@@ -1,5 +1,7 @@
 # A-2 测试框架说明
 
+本文档集中说明 `tests/` 下的测试组织方式、常用运行方式和各类测试的用途。主项目 README 只保留测试入口，详细内容统一放在这里。
+
 ## 技术栈
 
 `pytest` + `pytest-asyncio` + `pytest-timeout` + `httpx` + `aiosqlite` + `locust` + `psutil`
@@ -36,6 +38,9 @@ tests/
 ├── unit/
 │   └── services/
 │       ├── test_a3_callback_service.py
+│       ├── test_a3_integration_service.py
+│       ├── test_a5_integration_service.py
+│       ├── test_archive_adapter.py
 │       ├── test_ingestion_scheduler.py
 │       ├── test_ingestion_service.py
 │       ├── test_liveatc_client.py
@@ -43,6 +48,8 @@ tests/
 │       └── test_storage_service.py
 ├── integration/
 │   ├── api/
+│   │   ├── test_a3_integration_routes.py
+│   │   ├── test_a5_integration_routes.py
 │   │   ├── test_admin_routes.py
 │   │   ├── test_audio_routes.py
 │   │   ├── test_callback_routes.py
@@ -64,9 +71,9 @@ tests/
 说明：
 
 - `conftest.py` 仅保留跨全局生命周期夹具（数据库引擎、会话、HTTP client、配置覆盖）。
-- `fixtures/` 放业务域可复用测试夹具（如 `seeded_audio`、`voice_file_id`）。
-- `fixtures/api.py` 放接口层复用夹具（如 callback headers、请求 payload 模板）。
-- `fixtures/database.py` 放数据库种子夹具（如 VoiceFile/VoiceSegment 数据准备）。
+- `fixtures/` 放业务域可复用测试夹具（如 `seeded_audio`、`voice_file_id`、A-5 种子数据）。
+- `fixtures/api.py` 放接口层复用夹具（如 A-3/A-5 headers、请求 payload 模板）。
+- `fixtures/database.py` 放数据库种子夹具（如 VoiceFile/VoiceSegment、track_id、author_id 数据准备）。
 - `fixtures/external_services.py` 放外部服务辅助夹具（如 network_guard、scheduler status payload）。
 - `shared/` 放可复用辅助函数（如 UTC 时间构造）。
 - `unit/services` 与 `app/services` 按语义一一对应，便于快速定位测试。
@@ -81,6 +88,18 @@ tests/
 pytest tests/ -v
 ```
 
+推荐日常回归：
+
+```bash
+pytest tests/ -v -m "not network and not e2e and not longrun"
+```
+
+推荐的当前回归命令：
+
+```bash
+pytest tests/unit/services/test_a3_callback_service.py tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/unit/services/test_ingestion_scheduler.py tests/unit/services/test_query_service.py tests/unit/services/test_storage_service.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py tests/integration/api/test_callback_routes.py tests/integration/api/test_audio_routes.py tests/integration/api/test_health_routes.py tests/integration/api/test_ingestion_routes.py -m "not network and not e2e and not longrun" -v
+```
+
 仅单元测试：
 
 ```bash
@@ -93,10 +112,22 @@ pytest -m unit -v
 pytest -m integration -v
 ```
 
+A-3/A-5 相关测试：
+
+```bash
+pytest tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py -v
+```
+
 真实网络测试：
 
 ```bash
 pytest -m network -v
+```
+
+如果网络波动较大，可以只跑单个文件，例如：
+
+```bash
+pytest tests/unit/services/test_liveatc_client.py -m network -v
 ```
 
 限制单测超时（需要 `pytest-timeout`）：
@@ -113,6 +144,22 @@ set A2_LONGRUN_INTERVAL_SECONDS=30
 set A2_LONGRUN_INCLUDE_HISTORICAL=1
 pytest -m "e2e and longrun" -v
 ```
+
+说明：这类长跑测试默认不建议在常规回归里执行；本次修改后的常规验证可以直接跳过它们。
+
+### 建议的执行顺序
+
+1. 先跑 `pytest tests/ -v -m "not network and not e2e and not longrun"`。
+2. 如果改动触及 A-3/A-5，再补跑对应服务与路由测试。
+3. 需要验证 LiveATC 联网能力时，再跑 `-m network`。
+4. 只有在需要做稳定性验证时，才执行 `e2e` / `longrun`。
+
+### 常见注意事项
+
+- `tests/conftest.py` 已配置内存数据库和依赖覆盖，通常不需要手动准备数据库。
+- A-3/A-5 接口测试会用到 token 头，测试夹具里已经提供。
+- 共享的固定主键种子数据在测试里要先清理再写入，避免不同用例互相污染。
+- 长耗时测试默认应跳过，避免在日常回归里触发超时。
 
 ## Locust 压测
 

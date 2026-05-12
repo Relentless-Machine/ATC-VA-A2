@@ -191,31 +191,14 @@ python main.py cookie --output ./.local/liveatc_cookie.txt
 
 ## 测试
 
-离线单元和接口测试：
+测试说明已集中到 [tests/README.md](tests/README.md)。
+
+日常回归优先执行测试目录中的离线单元/集成测试，长稳、网络和 e2e 相关测试默认跳过。
+
+常规测试入口：
 
 ```bash
-pytest tests/unit/services/test_ingestion_scheduler.py tests/unit/services/test_liveatc_client.py tests/integration/api/test_ingestion_routes.py -q
-```
-
-LiveATC 网络测试：
-
-```bash
-pytest -m network tests/unit/services/test_liveatc_client.py tests/integration/api/test_ingestion_routes.py -q
-```
-
-全量测试：
-
-```bash
-pytest tests/ -v
-```
-
-长稳测试可以按需设置环境变量：
-
-```powershell
-$env:A2_LONGRUN_SECONDS="7200"
-$env:A2_LONGRUN_INTERVAL_SECONDS="1800"
-$env:A2_LONGRUN_INCLUDE_HISTORICAL="1"
-pytest -m "e2e and longrun" -v
+pytest tests/ -v -m "not network and not e2e and not longrun"
 ```
 
 ## ATC 音频来源与多源支持

@@ -38,6 +38,10 @@ def scheduler_status_payload() -> Callable[[bool], dict[str, str | bool | int | 
             "last_historical_found": 0,
             "last_historical_skipped": 0,
             "last_historical_downloaded": 0,
+            "last_historical_failed": 0,
+            "last_historical_first_failed_status": None,
+            "last_cookie_warmup_ok": None,
+            "last_cookie_count": 0,
         }
 
     return _build

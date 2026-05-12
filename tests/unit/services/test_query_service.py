@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import insert
+from sqlalchemy import delete, insert
 
 from app.db.models import VoiceFile, VoiceSegment
 from app.services.query_service import AudioQueryService
@@ -13,6 +13,8 @@ pytestmark = pytest.mark.unit
 
 @pytest.mark.asyncio
 async def test_find_segments_returns_overlaps_in_time_order(db_session):
+    await db_session.execute(delete(VoiceSegment))
+    await db_session.execute(delete(VoiceFile))
     await db_session.execute(
         insert(VoiceFile).values(
             id=201,

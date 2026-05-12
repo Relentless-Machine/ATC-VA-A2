@@ -6,8 +6,15 @@ from app.core.config import settings
 
 
 @pytest.fixture
-def a3_callback_headers() -> dict[str, str]:
+def a3_callback_headers(override_settings) -> dict[str, str]:
+    override_settings(a3_callback_token="test-a3-token")
     return {"X-A3-Token": settings.a3_callback_token}
+
+
+@pytest.fixture
+def api_token_headers(override_settings) -> dict[str, str]:
+    override_settings(api_token="test-api-token")
+    return {"X-Api-Token": settings.api_token}
 
 
 @pytest.fixture

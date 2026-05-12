@@ -72,3 +72,78 @@ async def test_handle_callback_empty_segments(mock_db):
 
     assert resp.segment_count == 0
     mock_db.add.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_callback_invalid_segment_range_400(mock_db):
+    vf = _make_voice_file()
+    mock_db.get = AsyncMock(return_value=vf)
+
+    bad_segment = A3SegmentPayload.model_construct(relative_start=1.0, relative_end=1.0, asr_content="bad")
+    payload = A3CallbackRequest.model_construct(voice_file_id=1, process_status=2, segments=[bad_segment])
+    svc = A3CallbackService(mock_db)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.handle_callback(payload)
+
+    assert exc_info.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_handle_callback_updates_existing_segment(mock_db):
+    vf = _make_voice_file()
+    mock_db.get = AsyncMock(return_value=vf)
+
+    existing = MagicMock()
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = existing
+    mock_db.execute = AsyncMock(return_value=execute_result)
+
+    payload = A3CallbackRequest(
+        voice_file_id=1,
+        process_status=2,
+        segments=[
+            A3SegmentPayload(relative_start=0.0, relative_end=2.0, asr_content="updated", vad_confidence=0.8),
+        ],
+    )
+
+    svc = A3CallbackService(mock_db)
+    resp = await svc.handle_callback(payload)
+
+    assert resp.segment_count == 1
+    assert existing.asr_content == "updated"
+    assert existing.vad_confidence == 0.8
+    mock_db.add.assert_called_once_with(existing)
+
+
+@pytest.mark.asyncio
+async def test_handle_callback_sets_optional_fields_on_insert(mock_db):
+    vf = _make_voice_file()
+    mock_db.get = AsyncMock(return_value=vf)
+
+    execute_result = MagicMock()
+    execute_result.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=execute_result)
+
+    payload = A3CallbackRequest(
+        voice_file_id=1,
+        process_status=2,
+        segments=[
+            A3SegmentPayload(
+                relative_start=0.0,
+                relative_end=3.0,
+                asr_content="alpha",
+                vad_confidence=0.6,
+                model_info="vad-v1",
+                storage_tag="s3",
+            )
+        ],
+    )
+
+    svc = A3CallbackService(mock_db)
+    await svc.handle_callback(payload)
+
+    created = mock_db.add.call_args.args[0]
+    assert created.vad_confidence == 0.6
+    assert created.model_info == "vad-v1"
+    assert created.storage_tag == "s3"

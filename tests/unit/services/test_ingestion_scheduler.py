@@ -2,13 +2,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.services.ingestion_scheduler import LiveATCScheduler
+from app.services.liveatc_client import HistoricalAudioLink
 
 pytestmark = pytest.mark.unit
+
+
+class _DummySession:
+    def __init__(self, session):
+        self._session = session
+
+    async def __aenter__(self):
+        return self._session
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
 
 
 @pytest.mark.asyncio
@@ -109,3 +122,188 @@ def test_status_formats_datetime_fields():
     status = scheduler.status()
     assert status["last_realtime_at"] == now.isoformat()
     assert status["last_historical_at"] == now.isoformat()
+
+
+def test_default_headers_include_cookie(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_cookie="session=abc123")
+
+    headers = scheduler._default_headers()
+
+    assert headers["Cookie"] == "session=abc123"
+    assert headers["User-Agent"] == settings.a2_http_user_agent
+
+
+def test_resolve_cookie_reads_file(tmp_path, override_settings):
+    cookie_file = tmp_path / "cookie.txt"
+    cookie_file.write_text("file_cookie=xyz", encoding="utf-8")
+    override_settings(a2_http_cookie="", a2_http_cookie_file=str(cookie_file))
+
+    scheduler = LiveATCScheduler()
+    assert scheduler._resolve_cookie() == "file_cookie=xyz"
+
+
+def test_http_timeout_returns_expected_values():
+    scheduler = LiveATCScheduler()
+    timeout = scheduler._http_timeout()
+
+    assert timeout.connect == 10.0
+    assert timeout.read == 20.0
+    assert timeout.write == 10.0
+    assert timeout.pool == 10.0
+
+
+@pytest.mark.asyncio
+async def test_sleep_human_delay_awaits_random_interval(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_liveatc_human_delay_min_seconds=1.0, a2_liveatc_human_delay_max_seconds=2.0)
+
+    with patch("app.services.ingestion_scheduler.random.uniform", return_value=1.5), patch(
+        "app.services.ingestion_scheduler.asyncio.sleep", new=AsyncMock()
+    ) as mocked_sleep:
+        await scheduler._sleep_human_delay()
+
+    mocked_sleep.assert_awaited_once_with(1.5)
+
+
+@pytest.mark.asyncio
+async def test_sleep_download_gap_awaits_random_interval(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_liveatc_download_gap_min_seconds=2.0, a2_liveatc_download_gap_max_seconds=3.0)
+
+    with patch("app.services.ingestion_scheduler.random.uniform", return_value=2.5), patch(
+        "app.services.ingestion_scheduler.asyncio.sleep", new=AsyncMock()
+    ) as mocked_sleep:
+        await scheduler._sleep_download_gap()
+
+    mocked_sleep.assert_awaited_once_with(2.5)
+
+
+@pytest.mark.asyncio
+async def test_run_realtime_once_skips_when_storage_low():
+    scheduler = LiveATCScheduler()
+    dummy_session = AsyncMock()
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=False),
+    ):
+        ok = await scheduler._run_realtime_once()
+
+    assert ok is False
+    assert scheduler.status()["last_error"] == "storage low: skipped realtime capture"
+
+
+@pytest.mark.asyncio
+async def test_run_realtime_once_success(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_max_retries=1)
+    dummy_session = AsyncMock()
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.httpx.AsyncClient", DummyAsyncClient
+    ), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.capture_realtime_stream",
+        new=AsyncMock(return_value=MagicMock()),
+    ), patch.object(
+        scheduler.client, "ensure_public_session_cookie", new=AsyncMock(return_value=True)
+    ), patch.object(
+        scheduler.client, "cookie_count", return_value=2
+    ), patch.object(
+        scheduler.client, "resolve_realtime_stream_url", new=AsyncMock(return_value="http://example.com/stream")
+    ), patch.object(
+        scheduler.client, "enrich_headers_with_session_cookie", new=AsyncMock(return_value={"User-Agent": "ua"})
+    ):
+        ok = await scheduler._run_realtime_once()
+
+    assert ok is True
+    assert scheduler.status()["last_realtime_at"] is not None
+    assert scheduler.status()["last_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_historical_once_downloads_first_link(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_max_retries=1, a2_historical_max_files_per_run=1)
+    dummy_session = AsyncMock()
+
+    class DummyStreamResponse:
+        status_code = 200
+
+        async def aiter_bytes(self, chunk_size=1):
+            yield b"audio"
+
+    class DummyStream:
+        async def __aenter__(self):
+            return DummyStreamResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return DummyStream()
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    link = HistoricalAudioLink(
+        url="http://example.com/archive.mp3",
+        file_name="VHHH5-App-Dep-Dir-Zone-Jan-01-2024-0000Z.mp3",
+    )
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.httpx.AsyncClient", DummyAsyncClient
+    ), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.has_source_url",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.register_historical_download",
+        new=AsyncMock(return_value=MagicMock()),
+    ), patch.object(
+        scheduler.client, "ensure_public_session_cookie", new=AsyncMock(return_value=True)
+    ), patch.object(
+        scheduler.client, "cookie_count", return_value=1
+    ), patch.object(
+        scheduler.client, "list_historical_links", new=AsyncMock(return_value=[link])
+    ), patch.object(
+        scheduler.client, "build_archive_urls", return_value=[]
+    ):
+        downloaded = await scheduler._run_historical_once()
+
+    status = scheduler.status()
+    assert downloaded == 1
+    assert status["last_historical_found"] == 1
+    assert status["last_historical_downloaded"] == 1
+    assert status["last_historical_failed"] == 0

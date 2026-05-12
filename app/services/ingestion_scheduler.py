@@ -1,0 +1,303 @@
+from __future__ import annotations
+
+import asyncio
+import random
+from datetime import datetime, timezone
+from pathlib import Path
+
+import httpx
+
+from app.core.config import settings
+from app.db.session import SessionLocal
+from app.services.ingestion_service import LiveATCIngestionService
+from app.services.liveatc_client import LiveATCHTTPClient
+from app.services.storage_service import StorageManagerService
+
+
+class LiveATCScheduler:
+    def __init__(self):
+        self.client = LiveATCHTTPClient()
+        self._running = False
+        self._realtime_task: asyncio.Task | None = None
+        self._historical_task: asyncio.Task | None = None
+        self._last_error: str | None = None
+        self._last_realtime_at: datetime | None = None
+        self._last_historical_at: datetime | None = None
+        self._last_historical_found: int = 0
+        self._last_historical_skipped: int = 0
+        self._last_historical_downloaded: int = 0
+        self._last_historical_failed: int = 0
+        self._last_historical_first_failed_status: int | None = None
+        self._last_cookie_warmup_ok: bool | None = None
+        self._last_cookie_count: int = 0
+        self._lock = asyncio.Lock()
+
+    def _default_headers(self) -> dict[str, str]:
+        headers = {
+            "User-Agent": settings.a2_http_user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": settings.a2_http_accept_language,
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+            "Referer": settings.a2_liveatc_base_url,
+        }
+        cookie = self._resolve_cookie()
+        if cookie:
+            headers["Cookie"] = cookie
+        return headers
+
+    @staticmethod
+    def _resolve_cookie() -> str | None:
+        cookie = settings.a2_http_cookie.strip()
+        if cookie:
+            return cookie
+        cookie_file = settings.a2_http_cookie_file.strip()
+        if not cookie_file:
+            return None
+        try:
+            value = Path(cookie_file).expanduser().read_text(encoding="utf-8").strip()
+            return value or None
+        except OSError:
+            return None
+
+    def _http_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0)
+
+    async def start(self) -> None:
+        async with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._realtime_task = asyncio.create_task(self._realtime_loop(), name="liveatc-realtime-loop")
+            self._historical_task = asyncio.create_task(self._historical_loop(), name="liveatc-historical-loop")
+
+    async def stop(self) -> None:
+        async with self._lock:
+            self._running = False
+            tasks = [t for t in (self._realtime_task, self._historical_task) if t]
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            self._realtime_task = None
+            self._historical_task = None
+
+    async def trigger_historical_once(self) -> int:
+        try:
+            return await self._run_historical_once()
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = f"historical: {exc}"
+            return 0
+
+    async def trigger_realtime_once(self) -> bool:
+        try:
+            return await self._run_realtime_once()
+        except Exception as exc:  # noqa: BLE001
+            self._last_error = f"realtime: {exc}"
+            return False
+
+    def status(self) -> dict[str, str | bool | int | None]:
+        return {
+            "running": self._running,
+            "icao_code": settings.a2_icao_code,
+            "last_error": self._last_error,
+            "last_realtime_at": self._fmt_time(self._last_realtime_at),
+            "last_historical_at": self._fmt_time(self._last_historical_at),
+            "last_historical_found": self._last_historical_found,
+            "last_historical_skipped": self._last_historical_skipped,
+            "last_historical_downloaded": self._last_historical_downloaded,
+            "last_historical_failed": self._last_historical_failed,
+            "last_historical_first_failed_status": self._last_historical_first_failed_status,
+            "last_cookie_warmup_ok": self._last_cookie_warmup_ok,
+            "last_cookie_count": self._last_cookie_count,
+        }
+
+    @staticmethod
+    def _fmt_time(value: datetime | None) -> str | None:
+        return value.isoformat() if value else None
+
+    async def _realtime_loop(self) -> None:
+        while self._running:
+            try:
+                await self._sleep_human_delay()
+                await self._run_realtime_once()
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"realtime: {exc}"
+            await asyncio.sleep(self._interval_delay(settings.a2_realtime_interval_seconds))
+
+    async def _historical_loop(self) -> None:
+        while self._running:
+            try:
+                await self._sleep_human_delay()
+                await self._run_historical_once()
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"historical: {exc}"
+            await asyncio.sleep(self._interval_delay(settings.a2_historical_interval_seconds))
+
+    async def _run_realtime_once(self) -> bool:
+        async with SessionLocal() as db:
+            storage = StorageManagerService(db)
+            can_download = await storage.ensure_capacity_for_new_download()
+            if not can_download:
+                self._last_error = "storage low: skipped realtime capture"
+                return False
+
+        headers = self._default_headers()
+        stream_url = None
+        max_retries = max(settings.a2_http_max_retries, 1)
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
+                    self._last_cookie_warmup_ok = await self.client.ensure_public_session_cookie(client, settings.a2_icao_code)
+                    self._last_cookie_count = self.client.cookie_count(client)
+                    stream_url = await self.client.resolve_realtime_stream_url(client, settings.a2_icao_code)
+                    headers = await self.client.enrich_headers_with_session_cookie(client, headers)
+                if stream_url:
+                    break
+            except Exception as exc:  # noqa: BLE001
+                self._last_error = f"realtime resolve failed: {exc}"
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(self._backoff_delay(attempt))
+        if not stream_url:
+            self._last_error = "unable to resolve realtime stream url"
+            return False
+        async with SessionLocal() as db:
+            svc = LiveATCIngestionService(db)
+            row = await svc.capture_realtime_stream(stream_url=stream_url, request_headers=headers)
+        if row is None:
+            return False
+        self._last_realtime_at = datetime.now(timezone.utc)
+        self._last_error = None
+        return True
+
+    async def _run_historical_once(self) -> int:
+        async with SessionLocal() as db:
+            storage = StorageManagerService(db)
+            can_download = await storage.ensure_capacity_for_new_download()
+            if not can_download:
+                self._last_error = "storage low: skipped historical download"
+                self._last_historical_found = 0
+                self._last_historical_skipped = 0
+                self._last_historical_downloaded = 0
+                self._last_historical_failed = 0
+                self._last_historical_first_failed_status = None
+                return 0
+
+        headers = self._default_headers()
+        last_exc: Exception | None = None
+        max_retries = max(settings.a2_http_max_retries, 1)
+        for attempt in range(max_retries):
+            try:
+                async with httpx.AsyncClient(timeout=self._http_timeout(), headers=headers) as client:
+                    self._last_cookie_warmup_ok = await self.client.ensure_public_session_cookie(client, settings.a2_icao_code)
+                    self._last_cookie_count = self.client.cookie_count(client)
+                    links = await self.client.list_historical_links(client, settings.a2_icao_code)
+                    self._last_historical_found = len(links)
+                    self._last_historical_skipped = 0
+                    self._last_historical_downloaded = 0
+                    self._last_historical_failed = 0
+                    self._last_historical_first_failed_status = None
+                    if not links:
+                        return 0
+                    saved = 0
+                    skipped = 0
+                    failed = 0
+                    first_failed_status: int | None = None
+                    async with SessionLocal() as db:
+                        svc = LiveATCIngestionService(db)
+                        for item in links[: settings.a2_historical_max_files_per_run]:
+                            if await svc.has_source_url(item.url):
+                                skipped += 1
+                                continue
+                            if saved > 0 or skipped > 0:
+                                await self._sleep_download_gap()
+                            download_urls = [item.url]
+                            for alt_url in self.client.build_archive_urls(item.file_name):
+                                if alt_url not in download_urls:
+                                    download_urls.append(alt_url)
+                            item_failed_status: int | None = None
+                            downloaded = False
+                            for download_url in download_urls:
+                                try:
+                                    async with client.stream("GET", download_url, follow_redirects=True) as resp:
+                                        if resp.status_code >= 400:
+                                            if item_failed_status is None:
+                                                item_failed_status = resp.status_code
+                                            continue
+                                        row = await svc.register_historical_download(
+                                            file_name=item.file_name,
+                                            source_url=item.url,
+                                            byte_iter=resp.aiter_bytes(chunk_size=settings.a2_chunk_size),
+                                        )
+                                        if row is not None:
+                                            saved += 1
+                                            downloaded = True
+                                            break
+                                except httpx.HTTPError:
+                                    continue
+                            if not downloaded:
+                                failed += 1
+                                if first_failed_status is None and item_failed_status is not None:
+                                    first_failed_status = item_failed_status
+                    self._last_historical_skipped = skipped
+                    self._last_historical_downloaded = saved
+                    self._last_historical_failed = failed
+                    self._last_historical_first_failed_status = first_failed_status
+                    self._last_historical_at = datetime.now(timezone.utc)
+                    self._last_error = (
+                        None
+                        if saved > 0 or failed == 0
+                        else f"historical download failed for {failed} candidate(s); first status={first_failed_status}"
+                    )
+                    return saved
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(self._backoff_delay(attempt))
+        if last_exc is not None:
+            raise last_exc
+        return 0
+
+    async def _sleep_human_delay(self) -> None:
+        delay = self._bounded_random_delay(
+            settings.a2_liveatc_human_delay_min_seconds,
+            settings.a2_liveatc_human_delay_max_seconds,
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    async def _sleep_download_gap(self) -> None:
+        delay = self._bounded_random_delay(
+            settings.a2_liveatc_download_gap_min_seconds,
+            settings.a2_liveatc_download_gap_max_seconds,
+        )
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _interval_delay(self, base_seconds: int | float) -> float:
+        base = max(float(base_seconds), 0.0)
+        jitter = max(float(settings.a2_scheduler_interval_jitter_seconds), 0.0)
+        if jitter == 0:
+            return base
+        return max(base + random.uniform(-jitter, jitter), 0.0)
+
+    @staticmethod
+    def _bounded_random_delay(min_seconds: int | float, max_seconds: int | float) -> float:
+        lower = max(float(min_seconds), 0.0)
+        upper = max(float(max_seconds), lower)
+        if upper == 0:
+            return 0.0
+        return random.uniform(lower, upper)
+
+    def _backoff_delay(self, attempt: int) -> float:
+        base = max(settings.a2_http_backoff_base_seconds, 0.1)
+        max_wait = max(settings.a2_http_backoff_max_seconds, base)
+        exp_wait = min(base * (2**attempt), max_wait)
+        jitter = random.uniform(0, base)
+        return min(exp_wait + jitter, max_wait)
+
+
+liveatc_scheduler = LiveATCScheduler()

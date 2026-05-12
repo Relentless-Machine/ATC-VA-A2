@@ -174,7 +174,7 @@ GET  http://127.0.0.1:8000/api/v1/ingestion/scheduler/status
 本次实测结果：
 
 - 实时下载成功，生成 `data/liveatc_verification/audio/realtime/20260511/vhhh_20260511T042548Z.mp3`。
-- 历史下载能生成候选 URL，但当前环境直接访问 `archive.liveatc.net` 返回 `403`，需要配置浏览器人工获取的 `A2_HTTP_COOKIE` 后重试。
+- 历史下载能生成候选 URL，但当前环境直接访问 `archive.liveatc.net` 返回 `403`，需要配置浏览器人工获取的 `A2_HTTP_COOKIE` 或 `A2_HTTP_COOKIE_FILE` 后重试。
 
 ## 独立下载脚本
 
@@ -184,6 +184,7 @@ GET  http://127.0.0.1:8000/api/v1/ingestion/scheduler/status
 cd liveatc-downloader
 python main.py stations VHHH --cookie-file ./.local/liveatc_cookie.txt
 python main.py download vhhh5 -o ./downloads --cookie-file ./.local/liveatc_cookie.txt
+python main.py cookie --output ./.local/liveatc_cookie.txt
 ```
 
 其中 `liveatc-downloader/.local/` 已被忽略，可用于保存本地 Cookie 文件。
@@ -217,7 +218,24 @@ $env:A2_LONGRUN_INCLUDE_HISTORICAL="1"
 pytest -m "e2e and longrun" -v
 ```
 
+## ATC 音频来源与多源支持
+
+本项目支持多个 ATC 音频存档来源。推荐优先级和集成指南详见：
+
+- [ATC_SOURCES_RESEARCH.md](ATC_SOURCES_RESEARCH.md)（来源研究、合规指南）
+- [ARCHIVE_ADAPTER_GUIDE.md](ARCHIVE_ADAPTER_GUIDE.md)（适配器框架、配置示例）
+- [app/services/archive_adapter.py](app/services/archive_adapter.py)（适配器接口定义）
+
+**当前支持的来源**：
+
+- LiveATC（主要，需 Cookie）
+- Broadcastify（推荐，需官方 API）
+- 本地镜像（可配置）
+- 直接录制（SDR，待研究）
+
 ## 后续任务
 
 - [ ] 接入 A-1 航迹数据实时同步，自动匹配 `track_id`。
 - [ ] A-4 前端界面对接，支持音频流播放、轨迹展示和标注编辑。
+- [ ] 实现 Broadcastify 官方 API 适配器（推荐优先）
+- [ ] 支持适配器链式回退（多源尝试）

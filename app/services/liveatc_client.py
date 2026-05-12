@@ -35,6 +35,7 @@ class LiveATCHTTPClient:
     def __init__(self):
         self.base_url = settings.a2_liveatc_base_url.rstrip("/")
         self.archive_base_url = settings.a2_liveatc_archive_base_url.rstrip("/")
+        self.archive_base_urls = self._build_archive_base_urls()
         self.search_tpl = settings.a2_liveatc_search_url
         self.mount_ids = [item.strip() for item in settings.a2_liveatc_mount_ids.split(",") if item.strip()]
         self.archive_file_prefixes = [
@@ -42,8 +43,32 @@ class LiveATCHTTPClient:
         ]
         self.realtime_stream_override = settings.a2_liveatc_realtime_stream_url.strip()
 
+    def _build_archive_base_urls(self) -> list[str]:
+        primary = settings.a2_liveatc_archive_base_url.rstrip("/")
+        urls = [primary] if primary else []
+        extras = [item.strip() for item in settings.a2_liveatc_archive_base_urls.split(",") if item.strip()]
+        for item in extras:
+            normalized = item.rstrip("/")
+            if normalized and normalized not in urls:
+                urls.append(normalized)
+        return urls or [self.archive_base_url]
+
     def build_search_url(self, icao: str) -> str:
         return self.search_tpl.format(icao=icao.upper())
+
+    def build_archive_urls(self, file_name: str) -> list[str]:
+        lowered = file_name.lower()
+        for mount in self.mount_ids:
+            if lowered.startswith(mount.lower()):
+                archive_dir = self._infer_archive_dir(station=mount, archive_identifier=file_name)
+                encoded = quote(file_name, safe="-_.()")
+                return [f"{base}/{archive_dir}/{encoded}" for base in self.archive_base_urls]
+        for prefix in self.archive_file_prefixes:
+            if lowered.startswith(prefix.lower()):
+                archive_dir = self._infer_archive_dir(station=prefix, archive_identifier=file_name)
+                encoded = quote(file_name, safe="-_.()")
+                return [f"{base}/{archive_dir}/{encoded}" for base in self.archive_base_urls]
+        return []
 
     @classmethod
     def _extract_hrefs(cls, html: str) -> list[str]:
@@ -104,7 +129,7 @@ class LiveATCHTTPClient:
             encoded_name = quote(file_name, safe="-_.()")
             candidates.append(
                 HistoricalAudioLink(
-                    url=f"{self.archive_base_url}/{archive_dir}/{encoded_name}",
+                    url=f"{self.archive_base_urls[0]}/{archive_dir}/{encoded_name}",
                     file_name=file_name,
                 )
             )
@@ -264,7 +289,8 @@ class LiveATCHTTPClient:
     async def list_historical_links(self, client: httpx.AsyncClient, icao: str) -> list[HistoricalAudioLink]:
         candidate_pages = [f"{self.base_url}/archive.php?m={mount}" for mount in self.mount_ids]
         for mount in self.mount_ids:
-            candidate_pages.append(f"{self.archive_base_url}/{mount}/")
+            for base_url in self.archive_base_urls:
+                candidate_pages.append(f"{base_url}/{mount}/")
         try:
             search_url, html = await self.get_search_page(client, icao)
             candidate_pages.append(search_url)
@@ -302,7 +328,7 @@ class LiveATCHTTPClient:
                 for mount in self.mount_ids:
                     if file_name.lower().startswith(mount.lower()):
                         archive_dir = self._infer_archive_dir(station=mount, archive_identifier=file_name)
-                        absolute = f"{self.archive_base_url}/{archive_dir}/{quote(file_name, safe='-_.()')}"
+                        absolute = f"{self.archive_base_urls[0]}/{archive_dir}/{quote(file_name, safe='-_.()')}"
                         links[absolute] = HistoricalAudioLink(url=absolute, file_name=file_name)
             if "archive.php" in page_url.lower():
                 archive_identifier = self._selected_archive_identifier(resp.text)

@@ -26,6 +26,7 @@ parser_download.add_argument(
 parser_download.add_argument('--user-agent', help='自定义 User-Agent 头')
 parser_download.add_argument('--cookie', help='自定义 Cookie 头')
 parser_download.add_argument('--cookie-file', help='包含 Cookie 头值的文件路径')
+parser_download.add_argument('--archive-base-url', help='覆盖历史归档域名（镜像）')
 
 # list 命令 - 列出历史音频
 parser_list = commands.add_parser('list', help='列出电台的历史音频档案')
@@ -33,6 +34,7 @@ parser_list.add_argument('station', help='电台标识符，例如 kpdx_app')
 parser_list.add_argument('--user-agent', help='自定义 User-Agent 头')
 parser_list.add_argument('--cookie', help='自定义 Cookie 头')
 parser_list.add_argument('--cookie-file', help='包含 Cookie 头值的文件路径')
+parser_list.add_argument('--archive-base-url', help='覆盖历史归档域名（镜像）')
 
 # download-range 命令 - 下载日期范围内的音频
 parser_download_range = commands.add_parser(
@@ -63,6 +65,26 @@ parser_download_range.add_argument(
 parser_download_range.add_argument('--user-agent', help='自定义 User-Agent 头')
 parser_download_range.add_argument('--cookie', help='自定义 Cookie 头')
 parser_download_range.add_argument('--cookie-file', help='包含 Cookie 头值的文件路径')
+parser_download_range.add_argument('--archive-base-url', help='覆盖历史归档域名（镜像）')
+
+# cookie 命令 - 使用浏览器导出 Cookie
+parser_cookie = commands.add_parser('cookie', help='使用浏览器导出 LiveATC Cookie')
+parser_cookie.add_argument(
+  '--output',
+  default='./.local/liveatc_cookie.txt',
+  help='输出 Cookie 文件路径，默认为 ./.local/liveatc_cookie.txt'
+)
+parser_cookie.add_argument(
+  '--headless',
+  action='store_true',
+  help='启用无头模式（默认关闭，便于手动完成验证）'
+)
+parser_cookie.add_argument(
+  '--timeout',
+  type=int,
+  default=120,
+  help='页面加载超时时间（秒），默认 120'
+)
 
 
 def get_args():

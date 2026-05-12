@@ -12,18 +12,202 @@
 
 ```text
 LiveATC 历史音频下载系统
-├── CLI 工具 (liveatc-downloader/)
-│   ├── 适用于手动下载
-│   ├── 支持单个、列表、批量下载
-│   └── 返回详细的错误和成功信息
-│
-└── 主应用异步系统 (app/)
-    ├── 自动定时下载
-    ├── 数据库集成
-    └── API 端点支持
+|-- CLI 工具 (liveatc-downloader/)
+|   |-- 适用于手动下载
+|   |-- 支持单个、列表、批量下载
+|   +-- 返回详细的错误和成功信息
+|
++-- 主应用异步系统 (app/)
+    |-- 自动定时下载
+    |-- 数据库集成
+    +-- API 端点支持
 ```
 
 ## 快速开始
+
+### [NEW] VHHH 专用多方式下载工具（推荐）
+
+针对 VHHH（香港赤鱲角）机场的历史音频下载，本项目提供了一个综合的多方式下载工具 **`vhhh_multimethod_download.py`**，集成了所有可能的下载方法。
+
+#### 功能特性
+
+- [OK] **多下载方法**：httpx 直连 + cloudscraper 自动绕过 Cloudflare
+- [OK] **多源 URL**：支持主存档 + 备用镜像 URL
+- [OK] **自动文件生成**：根据日期自动生成最近 N 个 30 分钟时段的候选文件名
+- [OK] **浏览器 Cookie 导出**：支持启动真实浏览器手动完成 Cloudflare 验证
+- [OK] **并行下载**：可配置的并发数量加速下载
+- [OK] **详细日志**：实时日志输出 + 文件日志记录
+
+#### 安装依赖
+
+```bash
+cd liveatc-downloader
+pip install -r requirements.txt
+
+# 可选：如需浏览器辅助 Cookie 导出
+playwright install
+```
+
+#### 方法 1：使用已有的 Cookie 文件
+
+```bash
+# 默认从 ./.local/liveatc_cookie.txt 读取 Cookie
+python vhhh_multimethod_download.py
+
+# 或指定 Cookie 文件位置
+python vhhh_multimethod_download.py --cookie-file ~/.liveatc_cookie
+```
+
+#### 方法 2：在命令行直接提供 Cookie
+
+```bash
+python vhhh_multimethod_download.py --cookie "cf_clearance=xxxxx; sessionid=yyyyy"
+```
+
+#### 方法 3：启动浏览器手动导出 Cookie
+
+如果以上方法都没有有效 Cookie，可以启动真实浏览器：
+
+```bash
+python vhhh_multimethod_download.py --export-cookie
+
+# 操作步骤：
+# 1. 浏览器会打开 https://www.liveatc.net/
+# 2. 如果出现 Cloudflare 验证，请手动完成
+# 3. 在浏览器加载完成后，返回终端，按 Enter 键
+# 4. 脚本会自动提取 Cookie 并保存到 ./.local/liveatc_cookie.txt
+```
+
+#### 方法 4：自动检测 + 并行下载多个时段
+
+下载最近 10 个 30 分钟时段（即最近 5 小时）：
+
+```bash
+python vhhh_multimethod_download.py --count 10
+```
+
+下载特定日期的音频（例如 2024-10-28）：
+
+```bash
+python vhhh_multimethod_download.py --date 2024-10-28 --count 8
+```
+
+#### 方法 5：使用环境变量
+
+```bash
+# 设置 Cookie 环境变量
+export LIVEATC_COOKIE="your-cookie-here"
+
+# 或从文件读取
+export LIVEATC_COOKIE_FILE=~/.liveatc_cookie
+
+# 运行下载
+python vhhh_multimethod_download.py --count 5
+
+# 或指定输出目录
+python vhhh_multimethod_download.py --output-dir ./my_downloads --count 5
+```
+
+#### 方法 6：指定自定义存档 URL
+
+如果知道备用镜像 URL：
+
+```bash
+python vhhh_multimethod_download.py --base-url https://backup-archive.example.com
+```
+
+#### 完整使用示例
+
+```bash
+# 示例 1: 最简单的用法（假设已有 Cookie）
+python vhhh_multimethod_download.py
+
+# 示例 2: 下载最近 24 小时（48 个 30 分钟时段）
+python vhhh_multimethod_download.py --count 48
+
+# 示例 3: 下载特定日期范围
+python vhhh_multimethod_download.py --date 2024-10-25 --count 12
+
+# 示例 4: 浏览器导出 Cookie 后下载
+python vhhh_multimethod_download.py --export-cookie --count 10
+
+# 示例 5: 使用命令行 Cookie 并输出到特定目录
+python vhhh_multimethod_download.py \
+  --cookie "cf_clearance=xxxx" \
+  --output-dir ./vhhh_archive \
+  --count 20
+
+# 示例 6: 调试模式（查看详细日志）
+python vhhh_multimethod_download.py --count 5 2>&1 | tee debug.log
+```
+
+#### 输出文件
+
+下载的音频文件保存在 `./downloads/` 目录（默认）：
+
+```text
+downloads/
+|-- VHHH5-App-Dep-Dir-Zone-Oct-28-2024-1200Z.mp3
+|-- VHHH5-App-Dep-Dir-Zone-Oct-28-2024-1230Z.mp3
+|-- VHHH5-Ground-Oct-28-2024-1200Z.mp3
+|-- ...
++-- vhhh_download.log
+```
+
+#### 日志文件
+
+每次运行都会生成 `downloads/vhhh_download.log` 包含：
+
+```text
+2024-10-28 12:34:56 [INFO] VHHH 机场历史音频多方式下载工具
+2024-10-28 12:34:56 [INFO] ► 模式: 自动检测 Cookie
+2024-10-28 12:34:57 [INFO] [OK] Cookie 已获取（长度: 256 字符）
+2024-10-28 12:34:57 [INFO] [OK] 生成了 40 个文件候选
+2024-10-28 12:35:00 [INFO] [OK] httpx 下载成功: https://archive.liveatc.net/vhhh/VHHH5-App-Dep-Dir-Zone-Oct-28-2024-1200Z.mp3 (5242880 bytes)
+...
+2024-10-28 12:45:30 [INFO] 下载完成: 15/40 成功
+```
+
+#### 常见问题解答
+
+**Q1: 如何判断是否需要 Cookie？**
+
+```bash
+# 尝试不使用 Cookie 下载
+python vhhh_multimethod_download.py --count 1
+
+# 如果日志显示 "[FAIL] httpx 遇到 403" 且 "[FAIL] cloudscraper 返回状态码 403"
+# 则说明需要 Cookie
+```
+
+**Q2: Cookie 已过期怎么办？**
+
+重新运行浏览器导出：
+
+```bash
+python vhhh_multimethod_download.py --export-cookie
+```
+
+**Q3: 下载速度很慢？**
+
+可以增加并发连接数（需要更多内存）：
+
+```bash
+# 修改源码中的 max_concurrent 参数
+# 或者提交 issue
+```
+
+**Q4: 能否自动定时下载？**
+
+可以使用系统任务调度或本项目的 `ingestion_scheduler.py`：
+
+```bash
+# 方式 A：Windows 任务计划
+# 方式 B：Linux cron
+# 方式 C：本项目内置调度器（见下方）
+```
+
+---
 
 ### 方式 1：使用 CLI 工具（liveatc-downloader）
 
@@ -47,6 +231,19 @@ pip install -r requirements.txt
 ```bash
 echo "your-cookie-value" > ./.local/liveatc_cookie.txt
 ```
+
+#### Browser-assisted cookie export (optional)
+
+If you want a real browser to capture cookies:
+
+```bash
+cd liveatc-downloader
+pip install -r requirements.txt
+playwright install
+python main.py cookie --output ./.local/liveatc_cookie.txt
+```
+
+This opens a browser window for manual verification. Press Enter in the terminal to save cookies.
 
 #### 列出机场电台
 
@@ -89,6 +286,16 @@ python main.py download-range vhhh5 \
   -o ./downloads \
   --cookie-file ./.local/liveatc_cookie.txt
 ```
+
+#### Archive base URL override (mirror)
+
+```bash
+python main.py download vhhh5 -o ./downloads \
+  --archive-base-url https://your-mirror.example.com \
+  --cookie-file ./.local/liveatc_cookie.txt
+```
+
+You can also set `LIVEATC_ARCHIVE_BASE_URL` for a default override.
 
 ### 方式 2：使用主应用 API（自动化）
 
@@ -146,80 +353,80 @@ curl -X POST http://localhost:8000/api/v1/ingestion/historical/register \
 
 ```text
 用户命令
-   ↓
-┌─────────────────────────────────────┐
-│ 1. 建立 HTTP 会话                    │
-│    (包含 User-Agent 和 Cookie)       │
-└──────────────┬──────────────────────┘
-               ↓
-┌─────────────────────────────────────┐
-│ 2. 获取档案页面                      │
-│    https://liveatc.net/archive.php  │
-│    解析 HTML 获取档案标识符           │
-└──────────────┬──────────────────────┘
-               ↓
-┌─────────────────────────────────────┐
-│ 3. 构建下载 URL                      │
-│    https://archive.liveatc.net/vhhh/ │
-│    + 文件名 (编码)                   │
-└──────────────┬──────────────────────┘
-               ↓
-┌─────────────────────────────────────┐
-│ 4. 检查文件                          │
-│    - 文件是否已存在                  │
-│    - 下载后验证大小                  │
-└──────────────┬──────────────────────┘
-               ↓
-┌─────────────────────────────────────┐
-│ 5. 返回结果                          │
-│    {                                │
-│      'success': true/false,          │
-│      'filename': '...',              │
-│      'filepath': '...',              │
-│      'url': '...',                   │
-│      'size': 1234567,                │
-│      'error': '...'  # 如果失败      │
-│    }                                │
-└─────────────────────────────────────┘
+   v
++-------------------------------------+
+| 1. 建立 HTTP 会话                    |
+|    (包含 User-Agent 和 Cookie)       |
++-------------------------------------+
+               v
++-------------------------------------+
+| 2. 获取档案页面                      |
+|    https://liveatc.net/archive.php  |
+|    解析 HTML 获取档案标识符           |
++-------------------------------------+
+               v
++-------------------------------------+
+| 3. 构建下载 URL                      |
+|    https://archive.liveatc.net/vhhh/ |
+|    + 文件名 (编码)                   |
++-------------------------------------+
+               v
++-------------------------------------+
+| 4. 检查文件                          |
+|    - 文件是否已存在                  |
+|    - 下载后验证大小                  |
++-------------------------------------+
+               v
++-------------------------------------+
+| 5. 返回结果                          |
+|    {                                |
+|      'success': true/false,          |
+|      'filename': '...',              |
+|      'filepath': '...',              |
+|      'url': '...',                   |
+|      'size': 1234567,                |
+|      'error': '...'  # 如果失败      |
+|    }                                |
++-------------------------------------+
 ```
 
 ### 主应用异步下载流程
 
 ```text
 定时任务触发 (每 hour/30min)
-   ↓
-┌──────────────────────────────┐
-│ 检查存储空间                  │
-│ (ensure_capacity)             │
-└──────┬───────────────────────┘
-       ↓
-┌──────────────────────────────┐
-│ Cookie 预热                   │
-│ (ensure_public_session_cookie)│
-└──────┬───────────────────────┘
-       ↓
-┌──────────────────────────────┐
-│ 列出历史链接                  │
-│ (list_historical_links)       │
-└──────┬───────────────────────┘
-       ↓
-   ┌─┴─────────────────────┐
-   │ 对每个链接循环         │
-   ├─────────────────────┤
-   │ 1. 检查 URL 是否存在   │
-   │    (has_source_url)   │
-   │ 2. 下载文件            │
-   │ 3. 保存到数据库        │
-   │    (register_download) │
-   └─┬───────────────────┘
-     ↓
-┌──────────────────────────────┐
-│ 记录统计信息                  │
-│ - 找到的文件数                │
-│ - 已下载数                    │
-│ - 跳过数                      │
-│ - 错误信息                    │
-└──────────────────────────────┘
+   v
++------------------------------+
+| 检查存储空间                  |
+| (ensure_capacity)             |
++------------------------------+
+       v
++------------------------------+
+| Cookie 预热                   |
+| (ensure_public_session_cookie)|
++------------------------------+
+       v
++------------------------------+
+| 列出历史链接                  |
+| (list_historical_links)       |
++------------------------------+
+       v
+   +-----------------------+
+   | 对每个链接循环         |
+   |---------------------|
+   | 1. 检查 URL 是否存在   |
+   |    (has_source_url)   |
+   | 2. 下载文件            |
+   | 3. 保存到数据库        |
+   |    (register_download) |
+   +---------------------+
+     v
++------------------------------+
+| 记录统计信息                  |
+| - 找到的文件数                |
+| - 已下载数                    |
+| - 跳过数                      |
+| - 错误信息                    |
++------------------------------+
 ```
 
 ## 关键特性

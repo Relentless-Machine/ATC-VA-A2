@@ -5,6 +5,7 @@ from cli import get_args
 from liveatc import get_stations, download_archive, list_historical_archives, download_date_range
 from datetime import datetime, timedelta
 import sys
+import os
 
 # Gets the last Zulu period of 30 minutes
 # E.g. if time is 10:35:00, it will return 10:00:00
@@ -15,10 +16,39 @@ def get_last_zulu_period(date, minutes=30):
 def resolve_cookie(args):
   if args.cookie:
     return args.cookie
+  env_cookie = os.getenv("LIVEATC_COOKIE", "").strip()
+  if env_cookie:
+    return env_cookie
   if getattr(args, "cookie_file", None):
     content = Path(args.cookie_file).read_text(encoding="utf-8").strip()
     return content or None
   return None
+
+
+def resolve_archive_base_url(args):
+  value = getattr(args, "archive_base_url", None)
+  if value:
+    return value
+  env_value = os.getenv("LIVEATC_ARCHIVE_BASE_URL", "").strip()
+  return env_value or None
+
+
+def export_cookie(args):
+  """Export LiveATC Cookie via a real browser session."""
+  try:
+    from browser_cookie_fetcher import export_liveatc_cookie
+  except Exception as exc:
+    print(f"错误: 未安装 playwright 或依赖缺失: {exc}", file=sys.stderr)
+    print("请先执行: pip install -r requirements.txt && playwright install", file=sys.stderr)
+    sys.exit(2)
+
+  cookie = export_liveatc_cookie(
+    output_path=args.output,
+    headless=args.headless,
+    timeout_seconds=args.timeout,
+  )
+  print(f"已保存 Cookie 到: {args.output}")
+  print(f"Cookie 预览(截断): {cookie[:80]}{'...' if len(cookie) > 80 else ''}")
 
 
 def stations(args):
@@ -36,6 +66,7 @@ def stations(args):
 def download(args):
   """下载单个音频档案。"""
   cookie = resolve_cookie(args)
+  archive_base_url = resolve_archive_base_url(args)
   date_now = datetime.utcnow()
 
   last_period = get_last_zulu_period(date_now)
@@ -54,6 +85,7 @@ def download(args):
     output_dir=args.output_dir,
     user_agent=args.user_agent,
     cookie=cookie,
+    archive_base_url=archive_base_url,
   )
   
   if not result.get('success'):
@@ -66,12 +98,14 @@ def download(args):
 def list_archives(args):
   """列出特定电台的历史音频档案。"""
   cookie = resolve_cookie(args)
+  archive_base_url = resolve_archive_base_url(args)
   print(f"获取 {args.station} 的历史档案列表...")
   
   archives = list_historical_archives(
     args.station,
     user_agent=args.user_agent,
-    cookie=cookie
+    cookie=cookie,
+    archive_base_url=archive_base_url,
   )
   
   if not archives:
@@ -89,6 +123,7 @@ def list_archives(args):
 def download_range(args):
   """下载指定日期范围内的音频。"""
   cookie = resolve_cookie(args)
+  archive_base_url = resolve_archive_base_url(args)
   
   try:
     start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
@@ -117,6 +152,7 @@ def download_range(args):
     output_dir=args.output_dir,
     user_agent=args.user_agent,
     cookie=cookie,
+    archive_base_url=archive_base_url,
     times=times
   )
   
@@ -137,3 +173,5 @@ if __name__ == '__main__':
     list_archives(args)
   elif args.command == 'download-range':
     download_range(args)
+  elif args.command == 'cookie':
+    export_cookie(args)

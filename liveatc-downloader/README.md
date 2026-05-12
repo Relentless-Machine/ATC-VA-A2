@@ -90,6 +90,18 @@ python main.py download-range vhhh5 \
   --cookie-file ./.local/liveatc_cookie.txt
 ```
 
+### Archive base URL override (mirror)
+
+If you have a mirror or local cache, override the archive host:
+
+```bash
+python main.py download vhhh5 -o ./downloads \
+  --archive-base-url https://your-mirror.example.com \
+  --cookie-file ./.local/liveatc_cookie.txt
+```
+
+You can also set `LIVEATC_ARCHIVE_BASE_URL` to apply it by default.
+
 ## Cookie 认证
 
 某些 LiveATC 节点受 Cloudflare 保护，可能需要手动提供 Cookie：
@@ -119,6 +131,19 @@ python main.py download vhhh5 -o ./downloads --cookie-file ./.local/liveatc_cook
 ```bash
 python main.py download vhhh5 -o ./downloads --cookie "cf_clearance=xxx; session=yyy"
 ```
+
+### Browser-assisted cookie export (optional)
+
+If you prefer a real browser session to capture cookies:
+
+```bash
+pip install -r requirements.txt
+playwright install
+python main.py cookie --output ./.local/liveatc_cookie.txt
+```
+
+This opens a browser window so you can complete any verification manually.
+Once ready, press Enter in the terminal to save the Cookie file.
 
 安全建议：不要将 Cookie 硬编码到代码或提交到仓库。推荐的安全做法：
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import random
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
@@ -40,9 +41,24 @@ class LiveATCScheduler:
             "Pragma": "no-cache",
             "Referer": settings.a2_liveatc_base_url,
         }
-        if settings.a2_http_cookie.strip():
-            headers["Cookie"] = settings.a2_http_cookie.strip()
+        cookie = self._resolve_cookie()
+        if cookie:
+            headers["Cookie"] = cookie
         return headers
+
+    @staticmethod
+    def _resolve_cookie() -> str | None:
+        cookie = settings.a2_http_cookie.strip()
+        if cookie:
+            return cookie
+        cookie_file = settings.a2_http_cookie_file.strip()
+        if not cookie_file:
+            return None
+        try:
+            value = Path(cookie_file).expanduser().read_text(encoding="utf-8").strip()
+            return value or None
+        except OSError:
+            return None
 
     def _http_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0)
@@ -198,21 +214,34 @@ class LiveATCScheduler:
                                 continue
                             if saved > 0 or skipped > 0:
                                 await self._sleep_download_gap()
-                            async with client.stream("GET", item.url, follow_redirects=True) as resp:
-                                if resp.status_code >= 400:
-                                    failed += 1
-                                    if first_failed_status is None:
-                                        first_failed_status = resp.status_code
+                            download_urls = [item.url]
+                            for alt_url in self.client.build_archive_urls(item.file_name):
+                                if alt_url not in download_urls:
+                                    download_urls.append(alt_url)
+                            item_failed_status: int | None = None
+                            downloaded = False
+                            for download_url in download_urls:
+                                try:
+                                    async with client.stream("GET", download_url, follow_redirects=True) as resp:
+                                        if resp.status_code >= 400:
+                                            if item_failed_status is None:
+                                                item_failed_status = resp.status_code
+                                            continue
+                                        row = await svc.register_historical_download(
+                                            file_name=item.file_name,
+                                            source_url=item.url,
+                                            byte_iter=resp.aiter_bytes(chunk_size=settings.a2_chunk_size),
+                                        )
+                                        if row is not None:
+                                            saved += 1
+                                            downloaded = True
+                                            break
+                                except httpx.HTTPError:
                                     continue
-                                row = await svc.register_historical_download(
-                                    file_name=item.file_name,
-                                    source_url=item.url,
-                                    byte_iter=resp.aiter_bytes(chunk_size=settings.a2_chunk_size),
-                                )
-                                if row is not None:
-                                    saved += 1
-                                else:
-                                    failed += 1
+                            if not downloaded:
+                                failed += 1
+                                if first_failed_status is None and item_failed_status is not None:
+                                    first_failed_status = item_failed_status
                     self._last_historical_skipped = skipped
                     self._last_historical_downloaded = saved
                     self._last_historical_failed = failed

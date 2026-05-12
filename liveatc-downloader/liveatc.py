@@ -148,7 +148,15 @@ def _infer_archive_dir(station: str, archive_identifier: str) -> str:
     return station_token or "unknown"
 
 
-def download_archive(station, date, time, output_dir=".", user_agent: str | None = None, cookie: str | None = None) -> dict:
+def download_archive(
+    station,
+    date,
+    time,
+    output_dir=".",
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    archive_base_url: str | None = None,
+) -> dict:
     """
     下载 LiveATC 历史音频文件。
     
@@ -222,7 +230,8 @@ def download_archive(station, date, time, output_dir=".", user_agent: str | None
         
         # 构建下载 URL
         encoded_name = quote(filename, safe="-_.()")
-        url = f'https://archive.liveatc.net/{archive_dir}/{encoded_name}'
+        base_url = (archive_base_url or "https://archive.liveatc.net").rstrip("/")
+        url = f'{base_url}/{archive_dir}/{encoded_name}'
         print(f"正在下载: {url}")
 
         # 下载文件
@@ -277,7 +286,12 @@ def download_archive(station, date, time, output_dir=".", user_agent: str | None
         }
 
 
-def list_historical_archives(station: str, user_agent: str | None = None, cookie: str | None = None) -> list[dict]:
+def list_historical_archives(
+    station: str,
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    archive_base_url: str | None = None,
+) -> list[dict]:
     """
     列出特定电台的所有可用历史音频档案。
     
@@ -311,6 +325,7 @@ def list_historical_archives(station: str, user_agent: str | None = None, cookie
         archives = []
 
         # 从表格中提取档案链接
+        base_url = (archive_base_url or "https://archive.liveatc.net").rstrip("/")
         for link in soup.find_all('a', href=re.compile(r'archive\.liveatc\.net|\.mp3')):
             href = link.get('href', '')
             text = link.get_text(strip=True)
@@ -328,7 +343,7 @@ def list_historical_archives(station: str, user_agent: str | None = None, cookie
                     'day': day,
                     'year': year,
                     'time': time,
-                    'url': href if href.startswith('http') else f"https://archive.liveatc.net{href}",
+                    'url': href if href.startswith('http') else f"{base_url}{href}",
                 })
 
         return archives
@@ -345,6 +360,7 @@ def download_date_range(
     output_dir: str = ".",
     user_agent: str | None = None,
     cookie: str | None = None,
+    archive_base_url: str | None = None,
     times: list[str] | None = None,
 ) -> list[dict]:
     """
@@ -374,7 +390,15 @@ def download_date_range(
         for time_str in times:
             try:
                 print(f"\n下载 {station} {date_str} {time_str}...")
-                result = download_archive(station, date_str, time_str, output_dir, user_agent, cookie)
+                result = download_archive(
+                    station,
+                    date_str,
+                    time_str,
+                    output_dir,
+                    user_agent,
+                    cookie,
+                    archive_base_url=archive_base_url,
+                )
                 results.append(result)
                 if result['success']:
                     print(f"✓ 成功: {result['filename']}")

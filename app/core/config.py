@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     a2_liveatc_search_url: str = "https://www.liveatc.net/search/?icao={icao}"
     a2_liveatc_base_url: str = "https://www.liveatc.net"
     a2_liveatc_archive_base_url: str = "https://archive.liveatc.net"
+    a2_liveatc_archive_base_urls: str = ""
     a2_liveatc_mount_ids: str = "vhhh5"
     a2_liveatc_archive_file_prefixes: str = "VHHH5-App-Dep-Dir-Zone"
     a2_historical_candidate_slots: int = 8
@@ -42,6 +43,7 @@ class Settings(BaseSettings):
     a2_http_backoff_base_seconds: float = 1.0
     a2_http_backoff_max_seconds: float = 30.0
     a2_http_cookie: str = ""
+    a2_http_cookie_file: str = ""
 
     a3_callback_token: str = "replace-with-secure-token"
     a3_service_base_url: str = "http://localhost:9000"

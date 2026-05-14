@@ -5,3 +5,4 @@ beautifulsoup4
 noisereduce
 cloudscraper
 playwright
+pytest-cov

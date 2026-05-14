@@ -14,6 +14,24 @@
 - [OK] 详细日志记录
 - [OK] 自动虚拟环境支持
 
+## 绕过与回退路径
+
+- 浏览器辅助 Cookie 导出。
+- Playwright 持久化 profile 和 storage_state。
+- 模拟鼠标和键盘的浏览器访问。
+- Playwright request context 下载回退。
+- 代理池和静态代理文件作为网络补充。
+
+## 本机相关配置
+
+这些配置会直接影响能否成功导出和复用浏览器会话：
+
+- Chrome 安装路径和 Playwright channel。
+- 本地 profile 是否被其他 Chrome 进程占用。
+- Playwright 浏览器是否已安装。
+- 本机时间、网络、DNS 和防火墙。
+- 浏览器扩展和企业策略是否会影响 Cloudflare 页面。
+
 ---
 
 ## 快速入门（5 分钟）

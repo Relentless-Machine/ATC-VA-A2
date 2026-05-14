@@ -5,8 +5,9 @@ from typing import Generator
 from datetime import datetime, timedelta
 
 import requests
-import urllib.request
 from bs4 import BeautifulSoup
+
+from proxy_utils import ProxyPool, redact_proxy
 
 try:
     import cloudscraper
@@ -14,7 +15,11 @@ except Exception:
     cloudscraper = None
 
 
-def _build_session(user_agent: str | None = None, cookie: str | None = None) -> requests.Session:
+def _build_session(
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    proxy: str | None = None,
+) -> requests.Session:
     session = requests.Session()
     session.headers.update(
         {
@@ -33,10 +38,16 @@ def _build_session(user_agent: str | None = None, cookie: str | None = None) -> 
     )
     if cookie:
         session.headers["Cookie"] = cookie
+    if proxy:
+        session.proxies.update({"http": proxy, "https": proxy})
     return session
 
 
-def _build_cloudscraper(user_agent: str | None = None, cookie: str | None = None):
+def _build_cloudscraper(
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    proxy: str | None = None,
+):
     if cloudscraper is None:
         return None
     scraper = cloudscraper.create_scraper(
@@ -59,24 +70,48 @@ def _build_cloudscraper(user_agent: str | None = None, cookie: str | None = None
     )
     if cookie:
         scraper.headers["Cookie"] = cookie
+    if proxy:
+        scraper.proxies.update({"http": proxy, "https": proxy})
     return scraper
 
 
-def _request_liveatc(url: str, user_agent: str | None = None, cookie: str | None = None):
+def _proxy_try_count(proxy_pool: ProxyPool | None) -> int:
+    if not proxy_pool or not proxy_pool.proxies:
+        return 1
+    return min(3, len(proxy_pool.proxies))
+
+
+def _pick_proxy(proxy_pool: ProxyPool | None) -> str | None:
+    if not proxy_pool:
+        return None
+    return proxy_pool.pick()
+
+
+def _request_liveatc(
+    url: str,
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    proxy_pool: ProxyPool | None = None,
+):
     # 第一步：先用普通 requests 尝试
-    session = _build_session(user_agent=user_agent, cookie=cookie)
     resp = None
-    try:
-        print("正在尝试普通请求...")
-        session.get("https://www.liveatc.net/", timeout=20, allow_redirects=True)
-        resp = session.get(url, timeout=20, allow_redirects=True)
-        if resp.status_code == 200:
-            print("普通请求成功！")
-            return resp
-        else:
-            print(f"普通请求失败，状态码: {resp.status_code}")
-    except Exception as e:
-        print(f"普通请求发生异常: {e}")
+    tries = _proxy_try_count(proxy_pool)
+    for _ in range(tries):
+        proxy = _pick_proxy(proxy_pool)
+        if proxy:
+            print(f"普通请求使用代理: {redact_proxy(proxy)}")
+        session = _build_session(user_agent=user_agent, cookie=cookie, proxy=proxy)
+        try:
+            print("正在尝试普通请求...")
+            session.get("https://www.liveatc.net/", timeout=20, allow_redirects=True)
+            resp = session.get(url, timeout=20, allow_redirects=True)
+            if resp.status_code == 200:
+                print("普通请求成功！")
+                return resp
+            else:
+                print(f"普通请求失败，状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"普通请求发生异常: {e}")
 
     # 第二步：如果有提供Cookie，就不要再试cloudscraper了
     if cookie:
@@ -85,28 +120,43 @@ def _request_liveatc(url: str, user_agent: str | None = None, cookie: str | None
 
     # 第三步：尝试 cloudscraper（仅当没有提供Cookie时）
     print("正在尝试使用 cloudscraper 绕过 Cloudflare...")
-    scraper = _build_cloudscraper(user_agent=user_agent, cookie=cookie)
-    if scraper is None:
-        print("错误: 未安装 cloudscraper，无法继续。")
-        return resp
-
-    try:
-        scraper.get("https://www.liveatc.net/", timeout=20, allow_redirects=True)
-        resp = scraper.get(url, timeout=20, allow_redirects=True)
-        if resp.status_code == 200:
-            print("cloudscraper 请求成功！")
+    tries = _proxy_try_count(proxy_pool)
+    for _ in range(tries):
+        proxy = _pick_proxy(proxy_pool)
+        if proxy:
+            print(f"cloudscraper 使用代理: {redact_proxy(proxy)}")
+        scraper = _build_cloudscraper(user_agent=user_agent, cookie=cookie, proxy=proxy)
+        if scraper is None:
+            print("错误: 未安装 cloudscraper，无法继续。")
             return resp
-        else:
-            print(f"cloudscraper 也失败了，状态码: {resp.status_code}")
-            print("建议使用手动Cookie的方式。")
-            return resp
-    except Exception as e:
-        print(f"cloudscraper 发生异常: {e}")
-        return None
+
+        try:
+            scraper.get("https://www.liveatc.net/", timeout=20, allow_redirects=True)
+            resp = scraper.get(url, timeout=20, allow_redirects=True)
+            if resp.status_code == 200:
+                print("cloudscraper 请求成功！")
+                return resp
+            else:
+                print(f"cloudscraper 也失败了，状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"cloudscraper 发生异常: {e}")
+
+    print("建议使用手动Cookie或更换代理。")
+    return resp
 
 
-def get_stations(icao, user_agent: str | None = None, cookie: str | None = None) -> Generator[dict, None, None]:
-    page = _request_liveatc(f'https://www.liveatc.net/search/?icao={icao}', user_agent=user_agent, cookie=cookie)
+def get_stations(
+    icao,
+    user_agent: str | None = None,
+    cookie: str | None = None,
+    proxy_pool: ProxyPool | None = None,
+) -> Generator[dict, None, None]:
+    page = _request_liveatc(
+        f'https://www.liveatc.net/search/?icao={icao}',
+        user_agent=user_agent,
+        cookie=cookie,
+        proxy_pool=proxy_pool,
+    )
 
     # --- 修复点 2: 检查 page 是否为空 ---
     if page is None:
@@ -148,6 +198,23 @@ def _infer_archive_dir(station: str, archive_identifier: str) -> str:
     return station_token or "unknown"
 
 
+def _download_with_session(url: str, path: Path, session) -> tuple[bool, str | None, int]:
+    try:
+        resp = session.get(url, timeout=30, allow_redirects=True, stream=True)
+        if resp.status_code != 200:
+            return False, f"HTTP {resp.status_code}", 0
+        with open(path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 64):
+                if chunk:
+                    f.write(chunk)
+        size = path.stat().st_size if path.exists() else 0
+        if size == 0:
+            return False, "下载的文件大小为 0", 0
+        return True, None, size
+    except Exception as e:
+        return False, str(e), 0
+
+
 def download_archive(
     station,
     date,
@@ -156,6 +223,7 @@ def download_archive(
     user_agent: str | None = None,
     cookie: str | None = None,
     archive_base_url: str | None = None,
+    proxy_pool: ProxyPool | None = None,
 ) -> dict:
     """
     下载 LiveATC 历史音频文件。
@@ -185,6 +253,7 @@ def download_archive(
             f'https://www.liveatc.net/archive.php?m={station}',
             user_agent=user_agent,
             cookie=cookie,
+            proxy_pool=proxy_pool,
         )
 
         if page is None:
@@ -214,6 +283,21 @@ def download_archive(
         filename = f'{archive_identifier}-{date}-{time}.mp3'
         archive_dir = _infer_archive_dir(station=station, archive_identifier=archive_identifier)
 
+        # 优先使用页面中带签名参数的真实下载链接（如果存在）
+        signed_url = None
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            text = link.get_text(strip=True)
+            if filename in href or filename in text:
+                base_url = (archive_base_url or "https://archive.liveatc.net").rstrip("/")
+                if href.startswith('http'):
+                    signed_url = href
+                elif href.startswith('/'):
+                    signed_url = f"{base_url}{href}"
+                else:
+                    signed_url = f"{base_url}/{href.lstrip('/')}"
+                break
+
         # 创建输出目录
         out_dir = Path(output_dir).expanduser().resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -231,52 +315,61 @@ def download_archive(
         # 构建下载 URL
         encoded_name = quote(filename, safe="-_.()")
         base_url = (archive_base_url or "https://archive.liveatc.net").rstrip("/")
-        url = f'{base_url}/{archive_dir}/{encoded_name}'
+        url = signed_url or f'{base_url}/{archive_dir}/{encoded_name}'
         print(f"正在下载: {url}")
 
-        # 下载文件
-        try:
-            urllib.request.urlretrieve(url, str(path))
-        except Exception as e:
-            # 清理部分下载的文件
+        # 下载文件（支持代理轮换）
+        tries = _proxy_try_count(proxy_pool)
+        last_error = None
+        for _ in range(tries):
+            proxy = _pick_proxy(proxy_pool)
+            if proxy:
+                print(f"下载使用代理: {redact_proxy(proxy)}")
+            session = _build_session(user_agent=user_agent, cookie=cookie, proxy=proxy)
+            ok, err, size = _download_with_session(url, path, session)
+            if ok:
+                print(f"✓ 成功保存到: {path} ({size} 字节)")
+                return {
+                    'success': True,
+                    'filename': filename,
+                    'filepath': str(path),
+                    'url': url,
+                    'size': size
+                }
+            last_error = err
             if path.exists():
                 path.unlink()
-            return {
-                'success': False,
-                'filename': filename,
-                'filepath': str(path),
-                'url': url,
-                'error': f'下载失败: {str(e)}'
-            }
 
-        # 验证下载的文件
-        if not path.exists():
-            return {
-                'success': False,
-                'filename': filename,
-                'filepath': str(path),
-                'url': url,
-                'error': '下载完成但文件不存在'
-            }
+        # 如果没有 Cookie，再尝试 cloudscraper
+        if not cookie and cloudscraper is not None:
+            tries = _proxy_try_count(proxy_pool)
+            for _ in range(tries):
+                proxy = _pick_proxy(proxy_pool)
+                if proxy:
+                    print(f"cloudscraper 下载使用代理: {redact_proxy(proxy)}")
+                scraper = _build_cloudscraper(user_agent=user_agent, cookie=cookie, proxy=proxy)
+                if scraper is None:
+                    break
+                ok, err, size = _download_with_session(url, path, scraper)
+                if ok:
+                    print(f"✓ 成功保存到: {path} ({size} 字节)")
+                    return {
+                        'success': True,
+                        'filename': filename,
+                        'filepath': str(path),
+                        'url': url,
+                        'size': size
+                    }
+                last_error = err
+                if path.exists():
+                    path.unlink()
 
-        file_size = path.stat().st_size
-        if file_size == 0:
-            path.unlink()
-            return {
-                'success': False,
-                'filename': filename,
-                'filepath': str(path),
-                'url': url,
-                'error': '下载的文件大小为 0'
-            }
-
-        print(f"✓ 成功保存到: {path} ({file_size} 字节)")
         return {
-            'success': True,
+            'success': False,
             'filename': filename,
             'filepath': str(path),
             'url': url,
-            'size': file_size
+            'error': f'下载失败: {last_error or "未知错误"}'
         }
 
     except Exception as e:
@@ -291,6 +384,7 @@ def list_historical_archives(
     user_agent: str | None = None,
     cookie: str | None = None,
     archive_base_url: str | None = None,
+    proxy_pool: ProxyPool | None = None,
 ) -> list[dict]:
     """
     列出特定电台的所有可用历史音频档案。
@@ -315,6 +409,7 @@ def list_historical_archives(
             f'https://www.liveatc.net/archive.php?m={station}',
             user_agent=user_agent,
             cookie=cookie,
+            proxy_pool=proxy_pool,
         )
 
         if page is None:
@@ -362,6 +457,7 @@ def download_date_range(
     cookie: str | None = None,
     archive_base_url: str | None = None,
     times: list[str] | None = None,
+    proxy_pool: ProxyPool | None = None,
 ) -> list[dict]:
     """
     下载指定日期范围内的历史音频。
@@ -398,6 +494,7 @@ def download_date_range(
                     user_agent,
                     cookie,
                     archive_base_url=archive_base_url,
+                    proxy_pool=proxy_pool,
                 )
                 results.append(result)
                 if result['success']:

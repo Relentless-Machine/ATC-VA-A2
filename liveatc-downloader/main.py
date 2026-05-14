@@ -6,6 +6,7 @@ from liveatc import get_stations, download_archive, list_historical_archives, do
 from datetime import datetime, timedelta
 import sys
 import os
+from proxy_utils import load_proxy_pool, ProxyPool, redact_proxy
 
 # Gets the last Zulu period of 30 minutes
 # E.g. if time is 10:35:00, it will return 10:00:00
@@ -33,6 +34,19 @@ def resolve_archive_base_url(args):
   return env_value or None
 
 
+def resolve_proxy_pool(args):
+  proxies = load_proxy_pool(getattr(args, "proxy", None), getattr(args, "proxy_file", None))
+  mode = getattr(args, "proxy_mode", "round_robin")
+  if proxies:
+    pool = ProxyPool(proxies, mode=mode)
+    print(f"已加载 {len(proxies)} 个代理，模式: {mode}")
+    preview = ', '.join(redact_proxy(p) for p in proxies[:5])
+    if preview:
+      print(f"代理池预览: {preview}")
+    return pool
+  return None
+
+
 def export_cookie(args):
   """Export LiveATC Cookie via a real browser session."""
   try:
@@ -53,7 +67,8 @@ def export_cookie(args):
 
 def stations(args):
   cookie = resolve_cookie(args)
-  stations = get_stations(args.icao, user_agent=args.user_agent, cookie=cookie)
+  proxy_pool = resolve_proxy_pool(args)
+  stations = get_stations(args.icao, user_agent=args.user_agent, cookie=cookie, proxy_pool=proxy_pool)
   for station in stations:
     print(f"[{station['identifier']}] - {station['title']}")
 
@@ -67,6 +82,7 @@ def download(args):
   """下载单个音频档案。"""
   cookie = resolve_cookie(args)
   archive_base_url = resolve_archive_base_url(args)
+  proxy_pool = resolve_proxy_pool(args)
   date_now = datetime.utcnow()
 
   last_period = get_last_zulu_period(date_now)
@@ -86,6 +102,7 @@ def download(args):
     user_agent=args.user_agent,
     cookie=cookie,
     archive_base_url=archive_base_url,
+    proxy_pool=proxy_pool,
   )
   
   if not result.get('success'):
@@ -99,6 +116,7 @@ def list_archives(args):
   """列出特定电台的历史音频档案。"""
   cookie = resolve_cookie(args)
   archive_base_url = resolve_archive_base_url(args)
+  proxy_pool = resolve_proxy_pool(args)
   print(f"获取 {args.station} 的历史档案列表...")
   
   archives = list_historical_archives(
@@ -106,6 +124,7 @@ def list_archives(args):
     user_agent=args.user_agent,
     cookie=cookie,
     archive_base_url=archive_base_url,
+    proxy_pool=proxy_pool,
   )
   
   if not archives:
@@ -124,6 +143,7 @@ def download_range(args):
   """下载指定日期范围内的音频。"""
   cookie = resolve_cookie(args)
   archive_base_url = resolve_archive_base_url(args)
+  proxy_pool = resolve_proxy_pool(args)
   
   try:
     start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
@@ -153,7 +173,8 @@ def download_range(args):
     user_agent=args.user_agent,
     cookie=cookie,
     archive_base_url=archive_base_url,
-    times=times
+    times=times,
+    proxy_pool=proxy_pool,
   )
   
   # 统计结果

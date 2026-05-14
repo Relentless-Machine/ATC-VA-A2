@@ -4,6 +4,34 @@
 
 这个工具集提供了多种方式下载香港赤鱲角机场（VHHH）的 LiveATC 历史音频。
 
+## 可用路径
+
+当前仓库围绕 VHHH 下载已经形成几条并行路径：
+
+- 直接 HTTP 下载，作为基础路径。
+- cloudscraper 和浏览器头部对齐，作为传统回退路径。
+- 浏览器辅助 Cookie 导出，适合人工完成验证后保存会话。
+- Playwright 持久化 profile 或 storage_state，复用真实浏览器状态。
+- 模拟鼠标和键盘的浏览器访问脚本，尽量接近人工操作。
+- Playwright request context 下载，复用浏览器中的会话态。
+- 代理池或静态代理文件，作为网络层补充。
+
+## 实现补充
+
+- 真实浏览器会话比单纯的 Cookie 字符串更稳定，尤其是面对 Cloudflare 挑战时。
+- 现在的下载说明应优先介绍浏览器导出和 storage_state 保存，而不是只强调直连。
+- 若本机 Chrome profile 被占用，建议先复制 profile，再由脚本使用副本。
+
+## 本机相关配置
+
+以下配置会直接影响浏览器回退成败：
+
+- Chrome 安装路径和 Playwright channel 可用性。
+- 目标 profile 的读取权限。
+- 目标 profile 是否正被其他 Chrome 进程占用。
+- Playwright 浏览器是否已安装。
+- 系统时间、网络、DNS 和防火墙设置。
+
 ### 包含的工具
 
 | 工具 | 用途 | 难度 |

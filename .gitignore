@@ -239,3 +239,7 @@ liveatc-downloader/downloads/
 liveatc-downloader/*.mp3
 *cookie*.txt
 *Cookie*.txt
+
+# smoke test scripts
+scripts/
+scripts/*

@@ -20,11 +20,12 @@ VHHH 机场历史音频多方式下载工具
 import asyncio
 import argparse
 import os
+import random
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 import logging
 
 # 配置日志
@@ -139,7 +140,89 @@ def cookie_dict_to_header(cookies: dict) -> str:
     return '; '.join(f"{k}={v}" for k, v in cookies.items())
 
 
-async def preflight_session_establish(base_urls: list[str], cookie: Optional[str] = None):
+def normalize_proxy(proxy: str) -> Optional[str]:
+    if not proxy:
+        return None
+    proxy = proxy.strip()
+    if not proxy:
+        return None
+    if '://' not in proxy:
+        proxy = f"http://{proxy}"
+    return proxy
+
+
+def redact_proxy(proxy: str) -> str:
+    try:
+        parsed = urlparse(proxy)
+        if parsed.hostname:
+            scheme = parsed.scheme or 'http'
+            port = f":{parsed.port}" if parsed.port else ''
+            return f"{scheme}://{parsed.hostname}{port}"
+    except Exception:
+        pass
+    if '@' in proxy:
+        return proxy.split('@', 1)[1]
+    return proxy
+
+
+def load_proxy_pool(cli_proxy: Optional[str], cli_proxy_file: Optional[str]) -> list[str]:
+    proxies: list[str] = []
+
+    pool_str = (cli_proxy or os.environ.get('LIVEATC_PROXY_POOL', '')).strip()
+    pool_file = (cli_proxy_file or os.environ.get('LIVEATC_PROXY_FILE', '')).strip()
+
+    if pool_str:
+        if '\n' in pool_str:
+            parts = [p.strip() for p in pool_str.splitlines()]
+        else:
+            parts = [p.strip() for p in pool_str.split(',')]
+        for p in parts:
+            norm = normalize_proxy(p)
+            if norm:
+                proxies.append(norm)
+
+    if pool_file:
+        path = Path(pool_file)
+        if path.exists():
+            lines = [l.strip() for l in path.read_text(encoding='utf-8').splitlines()]
+            for l in lines:
+                norm = normalize_proxy(l)
+                if norm:
+                    proxies.append(norm)
+
+    # 去重，保持顺序
+    unique: list[str] = []
+    seen = set()
+    for p in proxies:
+        if p not in seen:
+            unique.append(p)
+            seen.add(p)
+    return unique
+
+
+class ProxyPool:
+    def __init__(self, proxies: list[str], mode: str = 'round_robin'):
+        self.proxies = proxies
+        self.mode = mode
+        self._index = 0
+        self._lock = asyncio.Lock()
+
+    async def pick(self) -> Optional[str]:
+        if not self.proxies:
+            return None
+        if self.mode == 'random':
+            return random.choice(self.proxies)
+        async with self._lock:
+            proxy = self.proxies[self._index % len(self.proxies)]
+            self._index += 1
+            return proxy
+
+
+async def preflight_session_establish(
+    base_urls: list[str],
+    cookie: Optional[str] = None,
+    proxy_pool: Optional[ProxyPool] = None,
+):
     """对 liveatc 和每个 archive base url 做简单的 GET 以建立会话和验证 Cookie 是否生效"""
     cookies = parse_cookie_string(cookie) if cookie else {}
     cookie_header = cookie_dict_to_header(cookies) if cookies else None
@@ -152,20 +235,32 @@ async def preflight_session_establish(base_urls: list[str], cookie: Optional[str
         "Connection": "keep-alive",
     }
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        try:
-            # 访问主站以建立 cf_clearance 关联
+    # 访问主站以建立 cf_clearance 关联
+    try:
+        proxy = await proxy_pool.pick() if proxy_pool else None
+        client_kwargs = {"timeout": 20.0}
+        if proxy:
+            client_kwargs["proxies"] = proxy
+            logger.debug(f"预检使用代理: {redact_proxy(proxy)}")
+        async with httpx.AsyncClient(**client_kwargs) as client:
             logger.info("预检: 访问 https://www.liveatc.net/ 建立会话")
             resp = await client.get("https://www.liveatc.net/", headers=headers, cookies=cookies, follow_redirects=True)
             logger.info(f"预检 liveatc 状态: {resp.status_code}")
             if resp.status_code != 200:
                 logger.debug(f"预检 liveatc 响应头: {resp.headers}")
-        except Exception as e:
-            logger.debug(f"预检 liveatc 失败: {e}")
+    except Exception as e:
+        logger.debug(f"预检 liveatc 失败: {e}")
 
-        # 对每个 archive base url 请求根路径
-        for base in base_urls:
-            try:
+    # 对每个 archive base url 请求根路径
+    for base in base_urls:
+        try:
+            proxy = await proxy_pool.pick() if proxy_pool else None
+            client_kwargs = {"timeout": 20.0}
+            if proxy:
+                client_kwargs["proxies"] = proxy
+                logger.debug(f"预检使用代理: {redact_proxy(proxy)}")
+
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 url = base.rstrip('/') + '/'
                 h = headers.copy()
                 if cookie_header:
@@ -175,8 +270,8 @@ async def preflight_session_establish(base_urls: list[str], cookie: Optional[str
                 logger.info(f"预检 {base} 状态: {r.status_code}")
                 if r.status_code != 200:
                     logger.debug(f"预检 {base} 响应头: {r.headers}")
-            except Exception as e:
-                logger.debug(f"预检 {base} 失败: {e}")
+        except Exception as e:
+            logger.debug(f"预检 {base} 失败: {e}")
 
 
 def export_cookie_via_browser() -> Optional[str]:
@@ -260,6 +355,7 @@ def generate_candidate_files(
 async def download_with_httpx(
     url: str,
     cookie: Optional[str] = None,
+    proxy: Optional[str] = None,
     timeout: float = 30.0
 ) -> Tuple[bool, Optional[bytes]]:
     """使用 httpx 直接下载（适合无 CF 保护的 URL）"""
@@ -274,7 +370,11 @@ async def download_with_httpx(
     
     cookies = parse_cookie_string(cookie) if cookie else {}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        client_kwargs = {"timeout": timeout}
+        if proxy:
+            client_kwargs["proxies"] = proxy
+            logger.debug(f"httpx 使用代理: {redact_proxy(proxy)}")
+        async with httpx.AsyncClient(**client_kwargs) as client:
             # 同时通过 cookies 参数和显式 Cookie 头发起请求
             cookie_header = cookie_dict_to_header(cookies) if cookies else None
             hdrs = headers.copy()
@@ -307,6 +407,7 @@ async def download_with_httpx(
 def download_with_cloudscraper(
     url: str,
     cookie: Optional[str] = None,
+    proxy: Optional[str] = None,
     timeout: float = 30.0
 ) -> Tuple[bool, Optional[bytes]]:
     """使用 cloudscraper 绕过 Cloudflare"""
@@ -330,6 +431,9 @@ def download_with_cloudscraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
         )
         scraper.headers.update(headers)
+        if proxy:
+            scraper.proxies.update({"http": proxy, "https": proxy})
+            logger.debug(f"cloudscraper 使用代理: {redact_proxy(proxy)}")
         if cookies:
             try:
                 scraper.cookies.update(cookies)
@@ -359,6 +463,7 @@ async def download_file(
     filename: str,
     base_urls: list[str],
     cookie: Optional[str] = None,
+    proxy_pool: Optional[ProxyPool] = None,
     output_dir: Path = OUTPUT_DIR
 ) -> Tuple[bool, Optional[Path]]:
     """尝试从所有可用的 URL 下载文件
@@ -377,8 +482,9 @@ async def download_file(
         archive_dir = "vhhh"  # 或从 filename 推断
         full_url = f"{base_url}/{archive_dir}/{encoded_filename}"
         
+        proxy = await proxy_pool.pick() if proxy_pool else None
         logger.info(f"尝试 httpx 下载: {full_url}")
-        success, content = await download_with_httpx(full_url, cookie, timeout=30.0)
+        success, content = await download_with_httpx(full_url, cookie, proxy=proxy, timeout=30.0)
         
         if success and content:
             output_path = output_dir / filename
@@ -387,8 +493,9 @@ async def download_file(
             return True, output_path
         
         # httpx 失败则尝试 cloudscraper
+        proxy = await proxy_pool.pick() if proxy_pool else None
         logger.info(f"尝试 cloudscraper 下载: {full_url}")
-        success, content = download_with_cloudscraper(full_url, cookie, timeout=30.0)
+        success, content = download_with_cloudscraper(full_url, cookie, proxy=proxy, timeout=30.0)
         
         if success and content:
             output_path = output_dir / filename
@@ -407,6 +514,7 @@ async def download_multiple_files(
     candidates: list[Tuple[str, str, datetime]],
     base_urls: list[str],
     cookie: Optional[str] = None,
+    proxy_pool: Optional[ProxyPool] = None,
     max_concurrent: int = 3,
     output_dir: Path = OUTPUT_DIR
 ) -> dict:
@@ -419,7 +527,7 @@ async def download_multiple_files(
     
     async def download_with_semaphore(filename):
         async with semaphore:
-            return await download_file(filename, base_urls, cookie, output_dir)
+            return await download_file(filename, base_urls, cookie, proxy_pool, output_dir)
     
     # 只取文件名，去重
     unique_files = list(dict.fromkeys(filename for _, filename, _ in candidates))
@@ -492,6 +600,23 @@ async def main():
         type=str,
         help="指定存档基 URL（覆盖默认）"
     )
+    parser.add_argument(
+        "--proxy",
+        type=str,
+        help="代理池字符串（逗号或换行分隔，例如: http://user:pass@ip:port, http://ip2:port）"
+    )
+    parser.add_argument(
+        "--proxy-file",
+        type=str,
+        help="代理池文件路径（每行一个代理）"
+    )
+    parser.add_argument(
+        "--proxy-mode",
+        type=str,
+        default="round_robin",
+        choices=["round_robin", "random"],
+        help="代理轮换模式（默认: round_robin）"
+    )
     
     args = parser.parse_args()
     
@@ -505,6 +630,9 @@ async def main():
     
     cookie = None
     
+    if args.cookie_file:
+        os.environ["LIVEATC_COOKIE_FILE"] = args.cookie_file
+
     if args.export_cookie:
         logger.info("► 模式: 浏览器辅助 Cookie 导出")
         cookie = await asyncio.to_thread(export_cookie_via_browser)
@@ -554,8 +682,17 @@ async def main():
         base_urls = [url for url in ARCHIVE_BASE_URLS if url]
     
     logger.info(f"[OK] 将尝试 {len(base_urls)} 个存档 URL 来源")
+
+    proxies = load_proxy_pool(args.proxy, args.proxy_file)
+    proxy_pool = ProxyPool(proxies, mode=args.proxy_mode) if proxies else None
+    if proxy_pool:
+        logger.info(f"[OK] 已加载 {len(proxies)} 个代理（模式: {args.proxy_mode}）")
+        logger.debug("代理池预览: " + ", ".join(redact_proxy(p) for p in proxies[:5]))
+    else:
+        logger.info("[INFO] 未配置代理池，将使用本机出口 IP")
+
     # 预检，尝试在下载文件前建立会话，确保 cf_clearance 等 Cookie 与主站关联
-    await preflight_session_establish(base_urls, cookie=cookie)
+    await preflight_session_establish(base_urls, cookie=cookie, proxy_pool=proxy_pool)
     
     # ========================================================================
     # 第四步：开始下载
@@ -568,6 +705,7 @@ async def main():
         candidates,
         base_urls,
         cookie=cookie,
+        proxy_pool=proxy_pool,
         max_concurrent=3,
         output_dir=output_dir
     )

@@ -7,7 +7,7 @@
 ## 推荐的使用优先级
 
 | 优先级 | 来源 | 状态 | 说明 |
-|--------|------|------|------|
+| -------- | ------ | ------ | ------ |
 | [1] | Broadcastify 官方 API | [NOTE] 待实现 | **最推荐**：完全合规，需高级订阅 + API 密钥 |
 | [2] | LiveATC + 手工 Cookie | [OK] 已实现 | 目前的主要方案；需检查 ToS 合规性 |
 | [3] | 本地镜像 | [WARN]️ 部分支持 | 自建缓存，需配置基 URL |
@@ -45,6 +45,18 @@
 - [OK] 已实现核心下载逻辑
 - [OK] Cookie 和 cloudscraper 回退
 - [WARN]️ **需检查官方 ToS 合规性**
+
+### 辅助能力
+
+仓库里已经具备下面这些面向 LiveATC 的辅助能力：
+
+- 浏览器辅助 Cookie 导出。
+- Playwright 持久化 profile 和 storage_state。
+- 模拟鼠标和键盘的浏览器访问脚本。
+- Playwright request context 下载回退。
+- 代理池和静态代理文件支持。
+
+这些能力并不改变适配器分层，只是让 LiveATC 这一侧更容易复用真实浏览器状态和网络环境。
 
 **使用**:
 
@@ -178,6 +190,10 @@ class ArchiveAdapterSelector:
 1. 实现 `BroadcastifyAdapter`
 2. 整合到 `ingestion_scheduler`
 3. 添加单元测试
+
+### 当前建议
+
+如果继续推进多源架构，建议把浏览器会话导出和代理池选择做成可插拔策略，而不是把它们硬编码在单一下载实现里。
 
 ### 长期
 

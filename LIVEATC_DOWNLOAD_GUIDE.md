@@ -38,6 +38,29 @@ LiveATC 历史音频下载系统
 - [OK] **并行下载**：可配置的并发数量加速下载
 - [OK] **详细日志**：实时日志输出 + 文件日志记录
 
+#### 回退方法
+
+在原有 httpx 和 cloudscraper 基础上，仓库还新增了这些路径：
+
+- 浏览器辅助 Cookie 导出，在真实浏览器中完成验证后保存会话。
+- Playwright 持久化 profile 和 storage_state，复用可用的浏览器上下文。
+- 模拟鼠标和键盘的浏览器访问脚本，用于更接近人工的访问流程。
+- Playwright request context 下载，尽量利用浏览器会话中的 Cookie。
+- 代理池回退，作为网络层补充。
+
+#### IP 池说明
+
+仓库中已经保留代理池相关能力，配置点集中在 `app/core/config.py`、`app/services/proxy_provider.py` 和 `liveatc-downloader/proxy_pool.txt`。当前默认策略仍是先尝试直连和浏览器会话，代理只在需要时作为补充。
+
+#### 本机相关配置
+
+以下项目会影响浏览器和代理回退的成功率：
+
+- Chrome 安装路径和 Playwright channel。
+- 本地 profile 是否被占用。
+- Playwright 浏览器是否已安装。
+- 系统时间、时区、DNS、网络和防火墙。
+
 #### 安装依赖
 
 ```bash

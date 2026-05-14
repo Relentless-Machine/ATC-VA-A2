@@ -1,24 +1,34 @@
 from __future__ import annotations
 
 import re
+import random
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
+from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.parse import urljoin
 
 import httpx
 
 from app.core.config import settings
+from app.services.proxy_provider import ProxyProvider
 
 try:
     import cloudscraper
 except Exception:  # pragma: no cover - optional dependency
     cloudscraper = None
 
+try:
+    from playwright.sync_api import sync_playwright
+except Exception:  # pragma: no cover - optional dependency
+    sync_playwright = None
+
 @dataclass
 class HistoricalAudioLink:
     url: str
     file_name: str
+    referer_url: str | None = None
 
 
 class LiveATCHTTPClient:
@@ -42,6 +52,120 @@ class LiveATCHTTPClient:
             item.strip() for item in settings.a2_liveatc_archive_file_prefixes.split(",") if item.strip()
         ]
         self.realtime_stream_override = settings.a2_liveatc_realtime_stream_url.strip()
+
+    @staticmethod
+    def _browser_context_kwargs() -> dict[str, object]:
+        kwargs: dict[str, object] = {
+            "user_agent": settings.a2_http_user_agent,
+            "locale": "zh-CN",
+            "extra_http_headers": {
+                "Accept-Language": settings.a2_http_accept_language,
+            },
+            "ignore_https_errors": True,
+        }
+        proxy = LiveATCHTTPClient._pick_static_proxy()
+        if proxy:
+            kwargs["proxy"] = {"server": proxy}
+        return kwargs
+
+    @staticmethod
+    def _pick_static_proxy() -> str | None:
+        if not settings.a2_proxy_enabled:
+            return None
+        path = Path(settings.a2_proxy_file)
+        if not path.exists():
+            return None
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        candidates: list[str] = []
+        for raw in lines:
+            normalized = ProxyProvider._normalize_proxy(raw)
+            if normalized:
+                candidates.append(normalized)
+        if not candidates:
+            return None
+        if settings.a2_proxy_mode.strip().lower() == "random":
+            return random.choice(candidates)
+        return candidates[0]
+
+    @staticmethod
+    def _split_user_data_profile(path_value: str) -> tuple[str, str | None]:
+        path = Path(path_value).expanduser()
+        if path.name.lower().startswith("profile") or path.name.lower() == "default":
+            return str(path.parent), path.name
+        return str(path), None
+
+    @staticmethod
+    def _browser_navigation_headers(referer: str | None = None) -> dict[str, str]:
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": settings.a2_http_accept_language,
+            "Cache-Control": "max-age=0",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-site" if referer else "none",
+            "Sec-Fetch-User": "?1",
+            "Priority": "u=0, i",
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    @staticmethod
+    def _browser_request_headers(referer: str | None = None) -> dict[str, str]:
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": settings.a2_http_accept_language,
+            "Cache-Control": "max-age=0",
+            "Upgrade-Insecure-Requests": "1",
+            "Priority": "u=0, i",
+        }
+        if referer:
+            headers["Referer"] = referer
+        return headers
+
+    @classmethod
+    def _new_browser_context(cls, playwright):
+        kwargs = cls._browser_context_kwargs()
+        if settings.a2_playwright_user_data_dir:
+            user_data_dir, profile_directory = cls._split_user_data_profile(settings.a2_playwright_user_data_dir)
+            launch_args = []
+            if profile_directory:
+                launch_args = [f"--profile-directory={profile_directory}"]
+            context = playwright.chromium.launch_persistent_context(
+                user_data_dir=user_data_dir,
+                headless=settings.a2_browser_headless,
+                channel=settings.a2_browser_channel or None,
+                user_agent=kwargs["user_agent"],
+                locale=kwargs["locale"],
+                extra_http_headers=kwargs["extra_http_headers"],
+                ignore_https_errors=kwargs["ignore_https_errors"],
+                args=launch_args,
+                proxy=kwargs.get("proxy"),
+            )
+            cookie_header = cls._resolve_cookie()
+            if cookie_header:
+                cookies = cls._browser_cookies_from_header(cookie_header, domain=".liveatc.net")
+                if cookies:
+                    context.add_cookies(cookies)
+            return context
+        browser = playwright.chromium.launch(
+            headless=settings.a2_browser_headless,
+            channel=settings.a2_browser_channel or None,
+            proxy=kwargs.get("proxy"),
+        )
+        storage_state_file = settings.a2_playwright_storage_state_file.strip()
+        if storage_state_file:
+            storage_state_path = Path(storage_state_file).expanduser()
+            if storage_state_path.exists():
+                kwargs["storage_state"] = str(storage_state_path)
+        context = browser.new_context(**kwargs)
+        cookie_header = cls._resolve_cookie()
+        if cookie_header:
+            cookies = cls._browser_cookies_from_header(cookie_header, domain=".liveatc.net")
+            if cookies:
+                context.add_cookies(cookies)
+        return browser, context
 
     def _build_archive_base_urls(self) -> list[str]:
         primary = settings.a2_liveatc_archive_base_url.rstrip("/")
@@ -90,6 +214,170 @@ class LiveATCHTTPClient:
         return "; ".join(pairs)
 
     @staticmethod
+    def _cookie_header_from_items(cookies: list[dict]) -> str:
+        pairs = []
+        for cookie in cookies:
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if name and value:
+                pairs.append(f"{name}={value}")
+        return "; ".join(pairs)
+
+    @staticmethod
+    def _browser_cookies_from_header(cookie_header: str, *, domain: str) -> list[dict[str, object]]:
+        jar = SimpleCookie()
+        jar.load(cookie_header)
+        cookies: list[dict[str, object]] = []
+        for name, morsel in jar.items():
+            value = morsel.value
+            if not name or not value:
+                continue
+            cookies.append(
+                {
+                    "name": name,
+                    "value": value,
+                    "domain": domain,
+                    "path": morsel["path"] or "/",
+                    "secure": True,
+                }
+            )
+        return cookies
+
+    @staticmethod
+    def _seed_client_cookies(client: httpx.AsyncClient, cookies: list[dict], *, allowed_domain: str | None = None) -> None:
+        for cookie in cookies:
+            name = cookie.get("name")
+            value = cookie.get("value")
+            if not name or value is None:
+                continue
+            domain = cookie.get("domain")
+            if allowed_domain and domain and allowed_domain not in domain:
+                continue
+            client.cookies.set(
+                name,
+                value,
+                domain=domain,
+                path=cookie.get("path") or "/",
+            )
+
+    @staticmethod
+    def _browser_fetch(url: str, *, wait_ms: int = 1500) -> tuple[int, str, list[dict]]:
+        if sync_playwright is None:
+            return 0, "", []
+        browser = None
+        try:
+            with sync_playwright() as playwright:
+                context_result = LiveATCHTTPClient._new_browser_context(playwright)
+                if isinstance(context_result, tuple):
+                    browser, context = context_result
+                    page = context.new_page()
+                else:
+                    context = context_result
+                    page = context.pages[0] if context.pages else context.new_page()
+                page.goto(
+                    settings.a2_liveatc_base_url,
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                    referer=settings.a2_liveatc_base_url,
+                )
+                page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 1.0) * 1000))
+                response = page.goto(
+                    url,
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                    referer=settings.a2_liveatc_base_url,
+                )
+                text = page.content()
+                return (response.status if response is not None else 0), text, []
+        except Exception:
+            return 0, "", []
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _browser_fetch_bytes(url: str, *, referer: str | None = None) -> tuple[int, bytes]:
+        if sync_playwright is None:
+            return 0, b""
+        status, body, _ = LiveATCHTTPClient._browser_request_get(url, referer=referer)
+        if status and body:
+            return status, body
+        browser = None
+        try:
+            with sync_playwright() as playwright:
+                context_result = LiveATCHTTPClient._new_browser_context(playwright)
+                if isinstance(context_result, tuple):
+                    browser, context = context_result
+                    page = context.new_page()
+                else:
+                    context = context_result
+                    page = context.pages[0] if context.pages else context.new_page()
+                bootstrap_url = referer or settings.a2_liveatc_base_url
+                page.goto(
+                    bootstrap_url,
+                    wait_until="domcontentloaded",
+                    timeout=45_000,
+                    referer=bootstrap_url,
+                )
+                page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 1.0) * 1000))
+                response = page.goto(
+                    url,
+                    wait_until="commit",
+                    timeout=45_000,
+                    referer=bootstrap_url,
+                )
+                body = response.body() if response is not None else b""
+                return (response.status if response is not None else 0), body
+        except Exception:
+            return 0, b""
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+
+    @staticmethod
+    def _browser_request_get(url: str, *, referer: str | None = None) -> tuple[int, bytes, str]:
+        if sync_playwright is None:
+            return 0, b"", ""
+        browser = None
+        try:
+            with sync_playwright() as playwright:
+                context_result = LiveATCHTTPClient._new_browser_context(playwright)
+                if isinstance(context_result, tuple):
+                    browser, context = context_result
+                else:
+                    context = context_result
+                bootstrap_url = referer or settings.a2_liveatc_base_url
+                try:
+                    page = context.pages[0] if context.pages else context.new_page()
+                    page.goto(
+                        bootstrap_url,
+                        wait_until="domcontentloaded",
+                        timeout=45_000,
+                        referer=bootstrap_url,
+                    )
+                    page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 1.0) * 1000))
+                except Exception:
+                    pass
+                response = context.request.get(url, headers=LiveATCHTTPClient._browser_request_headers(referer=bootstrap_url))
+                body = response.body() if response is not None else b""
+                text = response.text() if response is not None else ""
+                return (response.status if response is not None else 0), body, text
+        except Exception:
+            return 0, b"", ""
+        finally:
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+
+    @staticmethod
     def cookie_count(client: httpx.AsyncClient) -> int:
         return sum(1 for cookie in client.cookies.jar if cookie.name and cookie.value)
 
@@ -131,6 +419,7 @@ class LiveATCHTTPClient:
                 HistoricalAudioLink(
                     url=f"{self.archive_base_urls[0]}/{archive_dir}/{encoded_name}",
                     file_name=file_name,
+                    referer_url=f"{self.base_url}/archive.php?m={station}",
                 )
             )
         return candidates
@@ -149,7 +438,20 @@ class LiveATCHTTPClient:
         ]
         for url in seed_urls:
             try:
-                await client.get(url, follow_redirects=True)
+                resp = await client.get(url, follow_redirects=True)
+                if resp.status_code < 400:
+                    continue
+                if cloudscraper is not None:
+                    try:
+                        sc = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+                        sc.get(url, timeout=10)
+                    except Exception:
+                        pass
+                browser_status, browser_html, browser_cookies = self._browser_fetch(url)
+                if browser_status and browser_html:
+                    self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(url).hostname)
+                    if self._cookie_header_from_client(client):
+                        continue
             except httpx.HTTPError:
                 # 尝试 cloudscraper 回退以获取会话 cookie
                 if cloudscraper is not None:
@@ -158,6 +460,11 @@ class LiveATCHTTPClient:
                         sc.get(url, timeout=10)
                     except Exception:
                         pass
+                browser_status, browser_html, browser_cookies = self._browser_fetch(url)
+                if browser_status and browser_html:
+                    self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(url).hostname)
+                    if self._cookie_header_from_client(client):
+                        continue
                 continue
         return bool(self._cookie_header_from_client(client))
 
@@ -192,8 +499,9 @@ class LiveATCHTTPClient:
 
     async def get_search_page(self, client: httpx.AsyncClient, icao: str) -> tuple[str, str]:
         search_url = self.build_search_url(icao)
+        headers = self._browser_navigation_headers(referer=self.base_url)
         try:
-            resp = await client.get(search_url)
+            resp = await client.get(search_url, headers=headers)
             resp.raise_for_status()
             return search_url, resp.text
         except httpx.HTTPStatusError as exc:
@@ -201,10 +509,21 @@ class LiveATCHTTPClient:
             if cloudscraper is not None and getattr(exc.response, 'status_code', None) == 403:
                 status, text, cookie = self._cloudscraper_get_text(search_url, headers={
                     'User-Agent': settings.a2_http_user_agent,
+                    'Accept': headers['Accept'],
+                    'Accept-Language': headers['Accept-Language'],
+                    'Cache-Control': headers['Cache-Control'],
                     'Referer': self.base_url,
+                    'Upgrade-Insecure-Requests': headers['Upgrade-Insecure-Requests'],
                 })
                 if status and status < 400:
                     return search_url, text
+            browser_status, browser_text, browser_cookies = self._browser_fetch(search_url)
+            if browser_status and browser_text:
+                self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(search_url).hostname)
+                return search_url, browser_text
+            request_status, request_body, request_text = self._browser_request_get(search_url, referer=self.base_url)
+            if request_status and request_text:
+                return search_url, request_text
             raise
 
     async def resolve_realtime_stream_url(self, client: httpx.AsyncClient, icao: str) -> str | None:
@@ -214,7 +533,7 @@ class LiveATCHTTPClient:
         for mount in self.mount_ids:
             for playlist_url in (f"{self.base_url}/play/{mount}.pls", f"{self.base_url}/play/{mount}.m3u"):
                 try:
-                    resp = await client.get(playlist_url, follow_redirects=True)
+                    resp = await client.get(playlist_url, follow_redirects=True, headers=self._browser_navigation_headers(referer=self.base_url))
                 except httpx.HTTPError:
                     # 回退到 cloudscraper 同步请求
                     if cloudscraper is not None:
@@ -222,11 +541,26 @@ class LiveATCHTTPClient:
                         if status and status < 400:
                             resp = type('R', (), {'status_code': status, 'text': text})()
                         else:
+                            browser_status, browser_text, browser_cookies = self._browser_fetch(playlist_url)
+                            if browser_status and browser_text:
+                                self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(playlist_url).hostname)
+                                resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
+                            else:
+                                continue
+                    else:
+                        browser_status, browser_text, browser_cookies = self._browser_fetch(playlist_url)
+                        if browser_status and browser_text:
+                            self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(playlist_url).hostname)
+                            resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
+                        else:
                             continue
+                if resp.status_code >= 400:
+                    browser_status, browser_text, browser_cookies = self._browser_fetch(playlist_url)
+                    if browser_status and browser_text:
+                        self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(playlist_url).hostname)
+                        resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
                     else:
                         continue
-                if resp.status_code >= 400:
-                    continue
                 playlist_urls = re.findall(r"https?://[^\s'\"<>]+", resp.text)
                 for url in playlist_urls:
                     lowered = url.lower()
@@ -249,7 +583,12 @@ class LiveATCHTTPClient:
                     for href in self._extract_hrefs(text):
                         if "listen.php?" in href.lower():
                             candidate_listen_pages.append(self._to_abs(href, self.build_search_url(icao)))
-            pass
+            browser_status, browser_text, browser_cookies = self._browser_fetch(self.build_search_url(icao))
+            if browser_status and browser_text:
+                self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(self.build_search_url(icao)).hostname)
+                for href in self._extract_hrefs(browser_text):
+                    if "listen.php?" in href.lower():
+                        candidate_listen_pages.append(self._to_abs(href, self.build_search_url(icao)))
 
         for listen_url in candidate_listen_pages:
             listen_resp = await client.get(listen_url, follow_redirects=True)
@@ -303,7 +642,7 @@ class LiveATCHTTPClient:
         links: dict[str, HistoricalAudioLink] = {}
         for page_url in candidate_pages:
             try:
-                resp = await client.get(page_url, follow_redirects=True)
+                resp = await client.get(page_url, follow_redirects=True, headers=self._browser_navigation_headers(referer=self.base_url))
             except httpx.HTTPError:
                 # cloudscraper 回退
                 if cloudscraper is not None:
@@ -311,11 +650,38 @@ class LiveATCHTTPClient:
                     if status and status < 400:
                         resp = type('R', (), {'status_code': status, 'text': text})()
                     else:
-                        continue
+                        browser_status, browser_text, browser_cookies = self._browser_fetch(page_url)
+                        if browser_status and browser_text:
+                            self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(page_url).hostname)
+                            resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
+                        else:
+                            request_status, request_body, request_text = self._browser_request_get(page_url, referer=self.base_url)
+                            if request_status and request_text:
+                                resp = type('R', (), {'status_code': request_status, 'text': request_text})()
+                            else:
+                                continue
                 else:
-                    continue
+                    browser_status, browser_text, browser_cookies = self._browser_fetch(page_url)
+                    if browser_status and browser_text:
+                        self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(page_url).hostname)
+                        resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
+                    else:
+                        request_status, request_body, request_text = self._browser_request_get(page_url, referer=self.base_url)
+                        if request_status and request_text:
+                            resp = type('R', (), {'status_code': request_status, 'text': request_text})()
+                        else:
+                            continue
             if resp.status_code >= 400:
-                continue
+                browser_status, browser_text, browser_cookies = self._browser_fetch(page_url)
+                if browser_status and browser_text:
+                    self._seed_client_cookies(client, browser_cookies, allowed_domain=urlparse(page_url).hostname)
+                    resp = type('R', (), {'status_code': browser_status, 'text': browser_text})()
+                else:
+                    request_status, request_body, request_text = self._browser_request_get(page_url, referer=self.base_url)
+                    if request_status and request_text:
+                        resp = type('R', (), {'status_code': request_status, 'text': request_text})()
+                    else:
+                        continue
             for href in self._extract_hrefs(resp.text):
                 absolute = self._to_abs(href, page_url)
                 if not self.MP3_PATTERN.search(absolute):

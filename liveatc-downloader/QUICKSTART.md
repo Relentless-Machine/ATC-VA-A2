@@ -6,6 +6,25 @@
 - Windows / macOS / Linux
 - 项目根目录中的 `.venv` 虚拟环境
 
+## 当前支持的下载回退
+
+- 直接 HTTP 下载。
+- cloudscraper 和浏览器头部对齐。
+- 浏览器辅助导出 Cookie。
+- Playwright 持久化 profile 和 storage_state。
+- 模拟鼠标和键盘的浏览器访问。
+- 代理池作为最后补充。
+
+## 本机配置检查
+
+如果浏览器回退失败，通常优先检查：
+
+- Chrome 是否安装且可用。
+- 目标 profile 是否被占用。
+- Playwright 浏览器是否安装完整。
+- 本地网络是否可访问 LiveATC 和 Cloudflare。
+- 系统时间是否准确。
+
 ## 第一步：创建虚拟环境（仅需一次）
 
 在项目根目录运行：

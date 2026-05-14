@@ -15,6 +15,47 @@
 - A-3 集成：处理请求、状态查询、失败重试、标注同步。
 - A-5 集成：轨迹查询、标注者查询、标注同步、跨模块报告。
 
+## 最新进展
+
+当前仓库对 LiveATC 下载已经补充了多条回退路径，按优先级大致如下：
+
+- 直接 HTTP 请求，适合未触发 Cloudflare 保护的场景。
+- cloudscraper 和浏览器头部对齐，作为传统绕过方式的补充。
+- Playwright 持久化 profile 或 storage_state，优先使用真实浏览器会话。
+- 浏览器辅助导出 Cookie，允许在真实浏览器中手工完成验证后保存会话。
+- 浏览器鼠标和键盘模拟脚本，尝试更接近人工操作流程。
+- Playwright request context 下载，尽量复用浏览器上下文中的会话状态。
+- 代理池回退，作为网络层的可选补充，不是默认主路径。
+
+对于当前环境，直接 replay Cookie 到 HTTP 客户端并不总是足够，原因通常是 Cloudflare 需要完整的浏览器上下文。现在的做法是尽量把下载动作放到真实浏览器上下文内完成，再把结果回传到现有保存逻辑。
+
+## IP 池和代理配置
+
+仓库已经保留了代理池能力，主要配置来自 `app/core/config.py` 和 `app/services/proxy_provider.py`。当前可用的配置项包括：
+
+- `a2_proxy_enabled`：是否启用代理池。
+- `a2_proxy_source`：代理来源，支持 `static`、`api`、`mixed`。
+- `a2_proxy_mode`：代理选择方式，支持轮询和随机。
+- `a2_proxy_file`：静态代理文件路径，默认指向 `./liveatc-downloader/proxy_pool.txt`。
+- `a2_proxy_api_enabled`：是否启用代理 API 获取。
+- `a2_proxy_api_url`：代理 API 地址。
+- `a2_proxy_api_protocol`、`a2_proxy_api_country_code`、`a2_proxy_api_count`：代理 API 过滤条件。
+
+代理当前是显式回退，不建议作为首选路径。默认策略仍是先尝试低频、低并发的直连和浏览器上下文下载，代理只在直连失败或环境确实需要时再启用。
+
+## 浏览器下载与本机配置
+
+为了让浏览器回退真正可用，下面这些本机配置会直接影响成功率：
+
+- Chrome 安装位置和 channel 可用性。
+- 本地 Chrome profile 的访问权限，尤其是 `Profile 3` 这类目录。
+- 是否存在正在运行的 Chrome 进程占用同一 profile。
+- Playwright 浏览器是否已安装。
+- 本机时间、时区和网络连通性。
+- 是否有扩展、企业策略或防火墙影响 Cloudflare 页面。
+
+相关脚本已经增加了 profile clone、storage_state 导出和模拟鼠标键盘的辅助路径，便于把人工验证后的浏览器状态保存下来继续使用。
+
 ## 安装与启动
 
 ```bash

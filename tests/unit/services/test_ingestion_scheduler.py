@@ -69,7 +69,7 @@ async def test_trigger_realtime_once_sets_error_when_exception():
         ok = await scheduler.trigger_realtime_once()
 
     assert ok is False
-    assert scheduler.status()["last_error"] == "realtime: boom"
+    assert scheduler.status()["last_error"] == "realtime: RuntimeError: boom"
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_trigger_historical_once_sets_error_when_exception():
         downloaded = await scheduler.trigger_historical_once()
 
     assert downloaded == 0
-    assert scheduler.status()["last_error"] == "historical: boom"
+    assert scheduler.status()["last_error"] == "historical: RuntimeError: boom"
 
 
 def test_backoff_delay_respects_range_and_max():
@@ -248,6 +248,7 @@ async def test_run_historical_once_downloads_first_link(override_settings):
 
     class DummyStreamResponse:
         status_code = 200
+        headers = {"content-type": "audio/mpeg"}
 
         async def aiter_bytes(self, chunk_size=1):
             yield b"audio"
@@ -307,3 +308,149 @@ async def test_run_historical_once_downloads_first_link(override_settings):
     assert status["last_historical_found"] == 1
     assert status["last_historical_downloaded"] == 1
     assert status["last_historical_failed"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_historical_once_uses_browser_request_bytes_when_stream_forbidden(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_max_retries=1, a2_historical_max_files_per_run=1)
+    dummy_session = AsyncMock()
+
+    class DummyStreamResponse:
+        status_code = 403
+
+        async def aiter_bytes(self, chunk_size=1):
+            if False:
+                yield b""
+
+    class DummyStream:
+        async def __aenter__(self):
+            return DummyStreamResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return DummyStream()
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    link = HistoricalAudioLink(
+        url="http://example.com/archive.mp3",
+        file_name="VHHH5-App-Dep-Dir-Zone-Jan-01-2024-0000Z.mp3",
+        referer_url="https://www.liveatc.net/archive.php?m=vhhh5",
+    )
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.httpx.AsyncClient", DummyAsyncClient
+    ), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.has_source_url",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.register_historical_download",
+        new=AsyncMock(return_value=MagicMock()),
+    ), patch.object(
+        scheduler.client, "ensure_public_session_cookie", new=AsyncMock(return_value=True)
+    ), patch.object(
+        scheduler.client, "cookie_count", return_value=1
+    ), patch.object(
+        scheduler.client, "list_historical_links", new=AsyncMock(return_value=[link])
+    ), patch.object(
+        scheduler.client, "build_archive_urls", return_value=[]
+    ), patch.object(
+        scheduler.client, "_browser_request_get", return_value=(200, b"audio-bytes", "")
+    ) as mocked_request, patch.object(
+        scheduler.client, "_browser_fetch_bytes", return_value=(200, b"audio-bytes")
+    ) as mocked_fetch_bytes:
+        downloaded = await scheduler._run_historical_once()
+
+    assert downloaded == 1
+    mocked_request.assert_called_once()
+    mocked_fetch_bytes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_historical_once_rejects_html_response(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_max_retries=1, a2_historical_max_files_per_run=1)
+    dummy_session = AsyncMock()
+
+    class DummyStreamResponse:
+        status_code = 200
+        headers = {"content-type": "text/html; charset=UTF-8"}
+
+        async def aiter_bytes(self, chunk_size=1):
+            yield b"<!DOCTYPE html><html><title>Just a moment...</title></html>"
+
+    class DummyStream:
+        async def __aenter__(self):
+            return DummyStreamResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return DummyStream()
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    link = HistoricalAudioLink(
+        url="http://example.com/archive.mp3",
+        file_name="VHHH5-App-Dep-Dir-Zone-Jan-01-2024-0000Z.mp3",
+    )
+    register = AsyncMock(return_value=MagicMock())
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.httpx.AsyncClient", DummyAsyncClient
+    ), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.has_source_url",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.register_historical_download",
+        new=register,
+    ), patch.object(
+        scheduler.client, "ensure_public_session_cookie", new=AsyncMock(return_value=True)
+    ), patch.object(
+        scheduler.client, "cookie_count", return_value=1
+    ), patch.object(
+        scheduler.client, "list_historical_links", new=AsyncMock(return_value=[link])
+    ), patch.object(
+        scheduler.client, "build_archive_urls", return_value=[]
+    ):
+        downloaded = await scheduler._run_historical_once()
+
+    status = scheduler.status()
+    assert downloaded == 0
+    assert status["last_historical_found"] == 1
+    assert status["last_historical_downloaded"] == 0
+    assert status["last_historical_failed"] == 1
+    assert status["last_historical_first_failed_status"] == 200
+    register.assert_not_awaited()

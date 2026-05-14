@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 ## 目录结构
 
-```
+```text
 tests/
 ├── conftest.py
 ├── fixtures/
@@ -99,6 +99,15 @@ pytest tests/ -v -m "not network and not e2e and not longrun"
 ```bash
 pytest tests/unit/services/test_a3_callback_service.py tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/unit/services/test_ingestion_scheduler.py tests/unit/services/test_query_service.py tests/unit/services/test_storage_service.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py tests/integration/api/test_callback_routes.py tests/integration/api/test_audio_routes.py tests/integration/api/test_health_routes.py tests/integration/api/test_ingestion_routes.py -m "not network and not e2e and not longrun" -v
 ```
+
+## 浏览器回退相关测试建议
+
+当前仓库已经增加了 Playwright 会话导出、浏览器辅助 Cookie 获取和代理池回退。相关验证建议如下：
+
+- 优先跑单元测试，确认下载服务的兜底逻辑和状态登记没有破坏。
+- 只有在本机允许的前提下，再手工运行浏览器回退脚本。
+- 网络测试仍应单独执行，避免把远端 403 或 Cloudflare 行为当成本地回归失败。
+- 若修改了代理池或本机 profile 相关配置，建议补跑与下载服务有关的测试文件。
 
 仅单元测试：
 

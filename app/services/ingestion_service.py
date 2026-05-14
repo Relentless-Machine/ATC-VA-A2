@@ -110,14 +110,20 @@ class LiveATCIngestionService:
             return open(file_path, "wb")
 
         fp = await asyncio.to_thread(_open_file)
+        failed = False
         try:
             async for chunk in byte_iter:
                 if not chunk:
                     continue
                 await asyncio.to_thread(fp.write, chunk)
                 written += len(chunk)
+        except Exception:
+            failed = True
+            raise
         finally:
             await asyncio.to_thread(fp.close)
+            if failed:
+                file_path.unlink(missing_ok=True)
 
         if written == 0:
             file_path.unlink(missing_ok=True)
@@ -144,6 +150,7 @@ class LiveATCIngestionService:
         timeout_seconds: int | None = None,
         max_bytes: int | None = None,
         request_headers: dict[str, str] | None = None,
+        proxy: str | None = None,
     ) -> VoiceFile | None:
         capture_seconds = timeout_seconds or settings.a2_realtime_capture_seconds
         bytes_limit = max_bytes or settings.a2_realtime_capture_max_bytes
@@ -157,7 +164,10 @@ class LiveATCIngestionService:
         start_ts = monotonic()
         written = 0
         with output_path.open("wb") as f:
-            async with httpx.AsyncClient(timeout=timeout, headers=request_headers) as client:
+            client_kwargs = {"timeout": timeout, "headers": request_headers}
+            if proxy:
+                client_kwargs["proxy"] = proxy
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 async with client.stream("GET", stream_url, follow_redirects=True) as resp:
                     resp.raise_for_status()
                     async for chunk in resp.aiter_bytes(chunk_size=8192):

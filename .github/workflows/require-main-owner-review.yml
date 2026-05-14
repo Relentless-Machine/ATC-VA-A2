@@ -29,8 +29,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Ensure test runner is available
-          pip install pytest
 
       - name: Run unit tests (non-blocking)
         continue-on-error: true

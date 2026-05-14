@@ -127,6 +127,16 @@ A-3/A-5 相关测试：
 pytest tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py -v
 ```
 
+### A-5 模块对接说明
+
+A-5 模块是 FastAPI + SQLite 后端源码，主应用会直接对接它的 `/tables`、`/query` 和 `/dev` 路由。当前 A-2 侧的真实对接验证重点是三项：
+
+- 能否连上 A-5 的本地 SQLite 数据库并读取表内容。
+- 能否通过 A-5 的表接口写入 `users`、`tracks`、`audio_records` 和 `annotations`。
+- A-5 不可用时，A-2 是否仍能安全回退到本地逻辑，不阻断主流程。
+
+> 已根据 A-5 模块源码完成联调对接。A-2 侧已接入 A-5 的本地 SQLite/FastAPI 契约，验证了用户、轨道、音频记录和标注数据的写入与回查；同时保留了 A-5 不可用时的本地回退路径，保证主流程可运行。
+
 真实网络测试：
 
 ```bash

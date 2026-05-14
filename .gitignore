@@ -243,3 +243,7 @@ liveatc-downloader/*.mp3
 # smoke test scripts
 scripts/
 scripts/*
+
+# other modules' codes and docs for integration
+outside/
+outside/*

@@ -4,6 +4,7 @@ import asyncio
 import random
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import AsyncIterator
 
 import httpx
 
@@ -13,6 +14,10 @@ from app.services.ingestion_service import LiveATCIngestionService
 from app.services.liveatc_client import LiveATCHTTPClient
 from app.services.proxy_provider import proxy_provider
 from app.services.storage_service import StorageManagerService
+
+
+class HistoricalAudioDownloadError(ValueError):
+    """Raised when a historical archive response is not an audio payload."""
 
 
 class LiveATCScheduler:
@@ -70,6 +75,41 @@ class LiveATCScheduler:
 
     def _http_timeout(self) -> httpx.Timeout:
         return httpx.Timeout(connect=10.0, read=20.0, write=10.0, pool=10.0)
+
+    def _historical_download_headers(self) -> dict[str, str]:
+        referer_mount = self.client.mount_ids[0] if self.client.mount_ids else settings.a2_icao_code.lower()
+        return {
+            "Accept": "audio/mpeg,audio/*;q=0.9,*/*;q=0.5",
+            "Referer": f"{settings.a2_liveatc_base_url.rstrip('/')}/archive.php?m={referer_mount}",
+        }
+
+    @staticmethod
+    def _looks_like_html(chunk: bytes) -> bool:
+        sample = chunk.lstrip()[:128].lower()
+        return sample.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<title>" in sample
+
+    @staticmethod
+    def _raise_for_invalid_audio_headers(resp: httpx.Response) -> None:
+        content_type = resp.headers.get("content-type", "").lower()
+        if "text/html" in content_type or "application/xhtml" in content_type:
+            raise HistoricalAudioDownloadError(f"unexpected archive content-type: {content_type}")
+
+    async def _validated_audio_byte_iter(self, resp: httpx.Response) -> AsyncIterator[bytes]:
+        self._raise_for_invalid_audio_headers(resp)
+        first_chunk = True
+        async for chunk in resp.aiter_bytes(chunk_size=settings.a2_chunk_size):
+            if not chunk:
+                continue
+            if first_chunk:
+                first_chunk = False
+                if self._looks_like_html(chunk):
+                    raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+            yield chunk
+
+    async def _validated_memory_byte_iter(self, body: bytes) -> AsyncIterator[bytes]:
+        if self._looks_like_html(body):
+            raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+        yield body
 
     async def start(self) -> None:
         async with self._lock:
@@ -252,7 +292,7 @@ class LiveATCScheduler:
                             item_failed_status: int | None = None
                             downloaded = False
                             for download_url in download_urls:
-                                download_headers = dict(headers)
+                                download_headers = {**headers, **self._historical_download_headers()}
                                 if getattr(item, "referer_url", None):
                                     download_headers["Referer"] = item.referer_url
                                 try:
@@ -265,13 +305,10 @@ class LiveATCScheduler:
                                                 referer=download_headers.get("Referer"),
                                             )
                                             if request_status < 400 and request_body:
-                                                async def _iter_body() -> asyncio.AsyncIterator[bytes]:
-                                                    yield request_body
-
                                                 row = await svc.register_historical_download(
                                                     file_name=item.file_name,
                                                     source_url=item.url,
-                                                    byte_iter=_iter_body(),
+                                                    byte_iter=self._validated_memory_byte_iter(request_body),
                                                 )
                                                 if row is not None:
                                                     saved += 1
@@ -279,41 +316,40 @@ class LiveATCScheduler:
                                                     break
                                             browser_status, browser_body = self.client._browser_fetch_bytes(download_url, referer=download_headers.get("Referer"))
                                             if browser_status < 400 and browser_body:
-                                                async def _iter_body() -> asyncio.AsyncIterator[bytes]:
-                                                    yield browser_body
-
                                                 row = await svc.register_historical_download(
                                                     file_name=item.file_name,
                                                     source_url=item.url,
-                                                    byte_iter=_iter_body(),
+                                                    byte_iter=self._validated_memory_byte_iter(browser_body),
                                                 )
                                                 if row is not None:
                                                     saved += 1
                                                     downloaded = True
                                                     break
                                             continue
+                                        self._raise_for_invalid_audio_headers(resp)
                                         row = await svc.register_historical_download(
                                             file_name=item.file_name,
                                             source_url=item.url,
-                                            byte_iter=resp.aiter_bytes(chunk_size=settings.a2_chunk_size),
+                                            byte_iter=self._validated_audio_byte_iter(resp),
                                         )
                                         if row is not None:
                                             saved += 1
                                             downloaded = True
                                             break
+                                except HistoricalAudioDownloadError:
+                                    if item_failed_status is None:
+                                        item_failed_status = 200
+                                    continue
                                 except httpx.HTTPError:
                                     request_status, request_body, request_text = self.client._browser_request_get(
                                         download_url,
                                         referer=download_headers.get("Referer"),
                                     )
                                     if request_status < 400 and request_body:
-                                        async def _iter_body() -> asyncio.AsyncIterator[bytes]:
-                                            yield request_body
-
                                         row = await svc.register_historical_download(
                                             file_name=item.file_name,
                                             source_url=item.url,
-                                            byte_iter=_iter_body(),
+                                            byte_iter=self._validated_memory_byte_iter(request_body),
                                         )
                                         if row is not None:
                                             saved += 1
@@ -321,13 +357,10 @@ class LiveATCScheduler:
                                             break
                                     browser_status, browser_body = self.client._browser_fetch_bytes(download_url, referer=download_headers.get("Referer"))
                                     if browser_status < 400 and browser_body:
-                                        async def _iter_body() -> asyncio.AsyncIterator[bytes]:
-                                            yield browser_body
-
                                         row = await svc.register_historical_download(
                                             file_name=item.file_name,
                                             source_url=item.url,
-                                            byte_iter=_iter_body(),
+                                            byte_iter=self._validated_memory_byte_iter(browser_body),
                                         )
                                         if row is not None:
                                             saved += 1

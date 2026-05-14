@@ -110,14 +110,20 @@ class LiveATCIngestionService:
             return open(file_path, "wb")
 
         fp = await asyncio.to_thread(_open_file)
+        failed = False
         try:
             async for chunk in byte_iter:
                 if not chunk:
                     continue
                 await asyncio.to_thread(fp.write, chunk)
                 written += len(chunk)
+        except Exception:
+            failed = True
+            raise
         finally:
             await asyncio.to_thread(fp.close)
+            if failed:
+                file_path.unlink(missing_ok=True)
 
         if written == 0:
             file_path.unlink(missing_ok=True)

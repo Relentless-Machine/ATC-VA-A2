@@ -28,6 +28,13 @@ jobs:
         with:
           script: |
             const requiredReviewer = 'Relentless-Machine';
+            const prAuthor = context.payload.pull_request.user && context.payload.pull_request.user.login;
+
+            if (prAuthor && prAuthor.toLowerCase() === requiredReviewer.toLowerCase()) {
+              core.info(`Skipping approval check because @${requiredReviewer} opened the PR.`);
+              return;
+            }
+
             const { owner, repo } = context.repo;
             const pullNumber = context.payload.pull_request.number;
 

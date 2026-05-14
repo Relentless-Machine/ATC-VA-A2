@@ -242,6 +242,13 @@ python main.py cookie --output ./.local/liveatc_cookie.txt
 pytest tests/ -v -m "not network and not e2e and not longrun"
 ```
 
+## GitHub 分支保护
+
+仓库已经补了 main 的审核约束配置：
+
+- [.github/CODEOWNERS](.github/CODEOWNERS) 会把全仓库默认指派给 `@Relentless-Machine`。
+- [.github/workflows/require-main-owner-review.yml](.github/workflows/require-main-owner-review.yml) 会在 PR 目标分支为 `main` 时检查是否已有你的批准。
+
 ## ATC 音频来源与多源支持
 
 本项目支持多个 ATC 音频存档来源。推荐优先级和集成指南详见：

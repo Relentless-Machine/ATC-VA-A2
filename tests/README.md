@@ -56,6 +56,7 @@ tests/
 │   │   ├── test_health_routes.py
 │   │   └── test_ingestion_routes.py
 │   └── flows/
+│       ├── test_a3_a5_integration_flow.py
 │       └── test_ingestion_callback_audio_flow.py
 ├── e2e/
 │   └── test_stability_liveatc.py
@@ -79,6 +80,16 @@ tests/
 - `unit/services` 与 `app/services` 按语义一一对应，便于快速定位测试。
 - `integration/api` 按路由域组织，避免文件命名歧义。
 - `integration/flows` 用于跨路由链路测试，验证关键业务流程端到端衔接。
+- 原来放在顶层的 A3/A5 集成测试已下沉到 `integration/flows`，因为它们使用真实数据库会话并验证跨服务流程，不属于纯 unit。
+
+## 测试选型指南
+
+更详细的测试分类、为什么这样分层、以及建议把测试写到什么位置，见 [tests/TESTING_GUIDE.md](tests/TESTING_GUIDE.md)。
+
+这份指南补充了两类信息：
+
+- 为什么要新增或保留 `unit / integration / network / e2e / longrun` 这些测试方式。
+- 为什么要把跨服务、真实数据库的测试从顶层文件移动到 `integration/flows`。
 
 ## 常用命令
 

@@ -45,7 +45,7 @@ def tmp_audio_storage(tmp_path, override_settings):
     return storage
 
 
-@pytest_asyncio.fixture(scope="session")
+@pytest_asyncio.fixture(scope="function")
 async def engine():
     _engine = create_async_engine(TEST_DB_URL, future=True)
     async with _engine.begin() as conn:

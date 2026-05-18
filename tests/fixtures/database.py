@@ -9,8 +9,8 @@ from tests.shared.time_utils import jan1_2024_utc
 
 @pytest_asyncio.fixture
 async def seeded_audio(db_session) -> None:
-    await db_session.execute(delete(VoiceSegment).where(VoiceSegment.id == 20))
-    await db_session.execute(delete(VoiceFile).where(VoiceFile.id == 10))
+    await db_session.execute(delete(VoiceSegment))
+    await db_session.execute(delete(VoiceFile))
     await db_session.execute(
         insert(VoiceFile).values(
             id=10,
@@ -47,8 +47,8 @@ async def seeded_audio(db_session) -> None:
 
 @pytest_asyncio.fixture
 async def seeded_a5_audio(db_session) -> None:
-    await db_session.execute(delete(VoiceSegment).where(VoiceSegment.id == 31))
-    await db_session.execute(delete(VoiceFile).where(VoiceFile.id == 30))
+    await db_session.execute(delete(VoiceSegment))
+    await db_session.execute(delete(VoiceFile))
     await db_session.execute(
         insert(VoiceFile).values(
             id=30,

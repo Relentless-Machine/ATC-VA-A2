@@ -89,6 +89,13 @@ class LiveATCScheduler:
         return sample.startswith((b"<!doctype html", b"<html", b"<head", b"<body")) or b"<title>" in sample
 
     @staticmethod
+    def _looks_like_mp3(chunk: bytes) -> bool:
+        sample = chunk.lstrip()[:16]
+        if sample.startswith(b"ID3"):
+            return True
+        return len(sample) >= 2 and sample[0] == 0xFF and (sample[1] & 0xE0) == 0xE0
+
+    @staticmethod
     def _raise_for_invalid_audio_headers(resp: httpx.Response) -> None:
         content_type = resp.headers.get("content-type", "").lower()
         if "text/html" in content_type or "application/xhtml" in content_type:
@@ -104,11 +111,15 @@ class LiveATCScheduler:
                 first_chunk = False
                 if self._looks_like_html(chunk):
                     raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+                if settings.a2_historical_strict_mp3_validation and not self._looks_like_mp3(chunk):
+                    raise HistoricalAudioDownloadError("archive response does not look like an MP3 payload")
             yield chunk
 
     async def _validated_memory_byte_iter(self, body: bytes) -> AsyncIterator[bytes]:
         if self._looks_like_html(body):
             raise HistoricalAudioDownloadError("archive response looks like an HTML challenge page")
+        if settings.a2_historical_strict_mp3_validation and not self._looks_like_mp3(body):
+            raise HistoricalAudioDownloadError("archive response does not look like an MP3 payload")
         yield body
 
     async def start(self) -> None:

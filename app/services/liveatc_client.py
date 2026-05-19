@@ -288,7 +288,8 @@ class LiveATCHTTPClient:
                     referer=settings.a2_liveatc_base_url,
                 )
                 text = page.content()
-                return (response.status if response is not None else 0), text, []
+                cookies = context.cookies()
+                return (response.status if response is not None else 0), text, cookies
         except Exception:
             return 0, "", []
         finally:
@@ -404,6 +405,11 @@ class LiveATCHTTPClient:
         floored_minute = (value.minute // 30) * 30
         return value.replace(minute=floored_minute, second=0, microsecond=0)
 
+    @staticmethod
+    def _archive_time_label(slot: datetime) -> str:
+        end = slot + timedelta(minutes=30)
+        return f"{slot.strftime('%H%M')}-{end.strftime('%H%M')}Z"
+
     def _recent_archive_candidates(
         self, *, station: str, archive_identifier: str, now: datetime | None = None
     ) -> list[HistoricalAudioLink]:
@@ -423,6 +429,92 @@ class LiveATCHTTPClient:
                 )
             )
         return candidates
+
+    def _browser_archive_flow_link(self, icao: str, *, now: datetime | None = None) -> HistoricalAudioLink | None:
+        if not settings.a2_liveatc_browser_archive_flow_enabled or sync_playwright is None:
+            return None
+        slot = self._last_finished_half_hour(now)
+        target_date = slot.strftime("%Y-%m-%d")
+        target_time = self._archive_time_label(slot)
+        timeout_ms = int(max(settings.a2_liveatc_browser_flow_timeout_seconds, 15.0) * 1000)
+        browser = None
+        context = None
+        try:
+            with sync_playwright() as playwright:
+                context_result = self._new_browser_context(playwright)
+                if isinstance(context_result, tuple):
+                    browser, context = context_result
+                    page = context.new_page()
+                else:
+                    context = context_result
+                    page = context.pages[0] if context.pages else context.new_page()
+
+                page.goto(self.base_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 1.0) * 1000))
+
+                search_box = page.locator("input[type='text']").first
+                if search_box.count():
+                    search_box.fill(icao.upper())
+                    page.keyboard.press("Enter")
+                    page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                else:
+                    page.goto(self.build_search_url(icao), wait_until="domcontentloaded", timeout=timeout_ms)
+
+                archive_link = page.locator("a", has_text="Archive Access").first
+                if not archive_link.count():
+                    archive_link = page.locator("a[href*='archive.php?m=']").first
+                if archive_link.count():
+                    archive_link.click()
+                    page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                else:
+                    mount = self.mount_ids[0] if self.mount_ids else icao.lower()
+                    page.goto(f"{self.base_url}/archive.php?m={mount}", wait_until="domcontentloaded", timeout=timeout_ms)
+
+                date_input = page.locator("input[type='text']").first
+                if date_input.count():
+                    date_input.fill(target_date)
+
+                selects = page.locator("select")
+                if selects.count() >= 2:
+                    time_select = selects.nth(selects.count() - 1)
+                    try:
+                        time_select.select_option(label=target_time)
+                    except Exception:
+                        time_select.select_option(index=0)
+                submit = page.locator("input[type='submit'], button[type='submit'], button", has_text="Submit").first
+                if submit.count():
+                    submit.click()
+                else:
+                    page.keyboard.press("Enter")
+                page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(1500)
+
+                html = page.content()
+                for href in self._extract_hrefs(html):
+                    absolute = self._to_abs(href, page.url)
+                    if self.MP3_PATTERN.search(absolute):
+                        file_name = absolute.split("/")[-1].split("?")[0] or "liveatc.mp3"
+                        return HistoricalAudioLink(url=absolute, file_name=file_name, referer_url=page.url)
+                for file_name in {m.group(1) for m in self.MP3_FILE_PATTERN.finditer(html)}:
+                    for mount in self.mount_ids:
+                        if file_name.lower().startswith(mount.lower()):
+                            archive_dir = self._infer_archive_dir(station=mount, archive_identifier=file_name)
+                            absolute = f"{self.archive_base_urls[0]}/{archive_dir}/{quote(file_name, safe='-_.()')}"
+                            return HistoricalAudioLink(url=absolute, file_name=file_name, referer_url=page.url)
+        except Exception:
+            return None
+        finally:
+            if browser is None and context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
+            if browser is not None:
+                try:
+                    browser.close()
+                except Exception:
+                    pass
+        return None
 
     @staticmethod
     def _mount_from_archive_page_url(page_url: str) -> str:
@@ -630,6 +722,7 @@ class LiveATCHTTPClient:
         for mount in self.mount_ids:
             for base_url in self.archive_base_urls:
                 candidate_pages.append(f"{base_url}/{mount}/")
+        browser_flow_link = self._browser_archive_flow_link(icao)
         try:
             search_url, html = await self.get_search_page(client, icao)
             candidate_pages.append(search_url)
@@ -702,6 +795,8 @@ class LiveATCHTTPClient:
                     station = self._mount_from_archive_page_url(page_url)
                     for item in self._recent_archive_candidates(station=station, archive_identifier=archive_identifier):
                         links.setdefault(item.url, item)
+        if browser_flow_link:
+            links.setdefault(browser_flow_link.url, browser_flow_link)
         for mount, archive_identifier in zip(self.mount_ids, self.archive_file_prefixes):
             for item in self._recent_archive_candidates(station=mount, archive_identifier=archive_identifier):
                 links.setdefault(item.url, item)

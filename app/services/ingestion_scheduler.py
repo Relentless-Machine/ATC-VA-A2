@@ -96,7 +96,12 @@ class LiveATCScheduler:
             return fallback
         for link in links:
             if self._same_file_name(link.file_name, fallback.file_name):
-                return HistoricalAudioLink(url=link.url, file_name=link.file_name, referer_url=link.referer_url or fallback.referer_url)
+                return HistoricalAudioLink(
+                    url=link.url,
+                    file_name=link.file_name,
+                    referer_url=link.referer_url or fallback.referer_url,
+                    browser_body=link.browser_body or fallback.browser_body,
+                )
         return fallback
 
     @staticmethod
@@ -316,6 +321,20 @@ class LiveATCScheduler:
                             fresh_item = await self._refresh_historical_link(client, item, settings.a2_icao_code)
                             if saved > 0 or skipped > 0:
                                 await self._sleep_download_gap()
+                            if getattr(fresh_item, 'browser_body', None):
+                                row = await svc.register_historical_download(
+                                    file_name=fresh_item.file_name,
+                                    source_url=fresh_item.url,
+                                    byte_iter=self._validated_memory_byte_iter(fresh_item.browser_body or b""),
+                                )
+                                if row is None:
+                                    failed += 1
+                                    if first_failed_status is None:
+                                        first_failed_status = 0
+                                else:
+                                    saved += 1
+                                    downloaded = True
+                                    continue
                             download_urls = [fresh_item.url]
                             for alt_url in self.client.build_archive_urls(fresh_item.file_name):
                                 if alt_url not in download_urls:

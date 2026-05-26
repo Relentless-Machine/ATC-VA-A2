@@ -237,7 +237,6 @@ class LiveATCScheduler:
                     stream_url = await self.client.resolve_realtime_stream_url(client, settings.a2_icao_code)
                     headers = await self.client.enrich_headers_with_session_cookie(client, headers)
                 if stream_url:
-                    proxy_provider.report_result(picked_proxy, True)
                     break
             except Exception as exc:  # noqa: BLE001
                 self._last_error = self._format_exc("realtime resolve failed", exc)
@@ -247,13 +246,17 @@ class LiveATCScheduler:
         if not stream_url:
             self._last_error = "unable to resolve realtime stream url"
             return False
-        async with SessionLocal() as db:
-            svc = LiveATCIngestionService(db)
-            row = await svc.capture_realtime_stream(
-                stream_url=stream_url,
-                request_headers=headers,
-                proxy=picked_proxy,
-            )
+        try:
+            async with SessionLocal() as db:
+                svc = LiveATCIngestionService(db)
+                row = await svc.capture_realtime_stream(
+                    stream_url=stream_url,
+                    request_headers=headers,
+                    proxy=picked_proxy,
+                )
+        except Exception:
+            proxy_provider.report_result(picked_proxy, False)
+            raise
         if row is None:
             proxy_provider.report_result(picked_proxy, False)
             return False

@@ -5,7 +5,7 @@ import re
 import random
 import asyncio
 import html
-import tempfile
+import base64
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
@@ -46,6 +46,7 @@ class HistoricalAudioLink:
     url: str
     file_name: str
     referer_url: str | None = None
+    browser_body: bytes | None = None
 
 
 class LiveATCHTTPClient:
@@ -432,46 +433,27 @@ class LiveATCHTTPClient:
                             return response.status, body
                     except Exception:
                         pass
-                download_dir = Path(tempfile.mkdtemp(prefix="liveatc-browser-download-"))
-                try:
-                    with page.expect_download(timeout=15_000) as download_info:
-                        page.evaluate(
-                            """
-                            async ({ url, filename }) => {
-                              const response = await fetch(url, { credentials: 'include' });
-                              if (!response.ok) {
-                                throw new Error(`fetch failed: ${response.status}`);
-                              }
-                              const blob = await response.blob();
-                              const objectUrl = URL.createObjectURL(blob);
-                              const anchor = document.createElement('a');
-                              anchor.href = objectUrl;
-                              anchor.download = filename;
-                              document.body.appendChild(anchor);
-                              anchor.click();
-                              anchor.remove();
-                              URL.revokeObjectURL(objectUrl);
-                            }
-                            """,
-                            {
-                                "url": url,
-                                "filename": Path(urlparse(url).path).name or "liveatc.mp3",
-                            },
-                        )
-                    download = download_info.value
-                    target_path = download_dir / (download.suggested_filename or Path(urlparse(url).path).name or "liveatc.mp3")
-                    download.save_as(str(target_path))
-                    return 200, target_path.read_bytes()
-                finally:
-                    try:
-                        for child in download_dir.iterdir():
-                            try:
-                                child.unlink()
-                            except Exception:
-                                pass
-                        download_dir.rmdir()
-                    except Exception:
-                        pass
+                encoded = page.evaluate(
+                    """
+                    async ({ url }) => {
+                      const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+                      if (!response.ok) {
+                        throw new Error(`fetch failed: ${response.status}`);
+                      }
+                      const buffer = await response.arrayBuffer();
+                      const bytes = new Uint8Array(buffer);
+                      let binary = '';
+                      const chunkSize = 0x8000;
+                      for (let index = 0; index < bytes.length; index += chunkSize) {
+                        binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+                      }
+                      return btoa(binary);
+                    }
+                    """,
+                    {"url": url},
+                )
+                if encoded:
+                    return 200, base64.b64decode(encoded)
         except Exception:
             return 0, b""
         finally:
@@ -575,9 +557,10 @@ class LiveATCHTTPClient:
         if not settings.a2_liveatc_browser_archive_flow_enabled:
             return None
         slot = self._last_finished_half_hour(now)
-        target_date = slot.strftime("%Y-%m-%d")
+        target_date = slot.strftime("%Y%m%d")
         target_time = self._archive_time_label(slot)
         timeout_ms = int(max(settings.a2_liveatc_browser_flow_timeout_seconds, 15.0) * 1000)
+        context = None
         try:
             from cloakbrowser import launch_persistent_context as _launch_persistent_context
 
@@ -590,39 +573,92 @@ class LiveATCHTTPClient:
             page = context.new_page()
             mount = self.mount_ids[0] if self.mount_ids else icao.lower()
             page.goto(f"{self.base_url}/archive.php?m={mount}", wait_until="domcontentloaded", timeout=timeout_ms)
-            page.wait_for_timeout(8_000)
+            page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 20.0) * 1000))
 
-            date_input = page.locator("input[type='text']").first
-            if date_input.count():
-                date_input.fill(target_date)
+            page.evaluate(
+                """
+                ({ value }) => {
+                  const visible = document.querySelector('#archiveDateDisplay');
+                  if (visible && visible._flatpickr) {
+                    visible._flatpickr.setDate(value, true, 'Ymd');
+                    return;
+                  }
+                  const hidden = document.querySelector('#archiveDate');
+                  if (hidden) {
+                    hidden.value = value;
+                    hidden.dispatchEvent(new Event('input', { bubbles: true }));
+                    hidden.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                  if (visible) {
+                    visible.value = value;
+                    visible.dispatchEvent(new Event('input', { bubbles: true }));
+                    visible.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                }
+                """,
+                {"value": target_date},
+            )
 
-            time_select = page.locator("select[name='time']").first
-            if time_select.count():
-                try:
-                    time_select.select_option(label=target_time)
-                except Exception:
-                    time_select.select_option(index=0)
+            time_select = page.locator("select[name='time']")
+            if time_select.count() == 0:
+                return None
+            try:
+                time_select.first.select_option(label=target_time)
+            except Exception:
+                return None
+
             submit = page.locator("input[type='submit'], button[type='submit'], button", has_text="Submit").first
             if submit.count():
                 submit.click()
             else:
                 page.keyboard.press("Enter")
-            deadline = max(timeout_ms, 15_000)
+
+            deadline = max(timeout_ms, 30_000)
             waited_ms = 0
             while waited_ms <= deadline:
                 html = page.content()
                 link = self._historical_audio_link_from_html(html, page.url)
                 if link is not None:
-                    return link
+                    try:
+                        page.goto(link.url, wait_until="commit", timeout=45_000, referer=link.referer_url)
+                        encoded = page.evaluate(
+                            """
+                            async ({ url }) => {
+                              const response = await fetch(url, { credentials: 'include', cache: 'no-store' });
+                              if (!response.ok) {
+                                throw new Error(`fetch failed: ${response.status}`);
+                              }
+                              const buffer = await response.arrayBuffer();
+                              const bytes = new Uint8Array(buffer);
+                              let binary = '';
+                              const chunkSize = 0x8000;
+                              for (let index = 0; index < bytes.length; index += chunkSize) {
+                                binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+                              }
+                              return btoa(binary);
+                            }
+                            """,
+                            {"url": link.url},
+                        )
+                        if encoded:
+                            return HistoricalAudioLink(
+                                url=link.url,
+                                file_name=link.file_name,
+                                referer_url=link.referer_url,
+                                browser_body=base64.b64decode(encoded),
+                            )
+                    except Exception:
+                        return link
                 page.wait_for_timeout(1000)
                 waited_ms += 1000
         except Exception:
             return None
         finally:
-            try:
-                context.close()  # type: ignore[name-defined]
-            except Exception:
-                pass
+            if context is not None:
+                try:
+                    context.close()
+                except Exception:
+                    pass
         return None
 
     def _historical_audio_link_from_html(self, html: str, page_url: str) -> HistoricalAudioLink | None:

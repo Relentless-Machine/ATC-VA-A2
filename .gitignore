@@ -248,8 +248,7 @@ liveatc-downloader/*.mp3
 *Cookie*.txt
 
 # smoke test scripts
-scripts/
-scripts/*
+scripts/liveatc*
 
 # other modules' codes and docs for integration
 outside/

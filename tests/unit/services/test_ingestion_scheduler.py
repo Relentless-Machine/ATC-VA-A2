@@ -241,6 +241,53 @@ async def test_run_realtime_once_success(override_settings):
 
 
 @pytest.mark.asyncio
+async def test_run_realtime_once_reports_proxy_failure_when_capture_raises(override_settings):
+    scheduler = LiveATCScheduler()
+    override_settings(a2_http_max_retries=1)
+    dummy_session = AsyncMock()
+
+    class DummyAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    def session_factory():
+        return _DummySession(dummy_session)
+
+    with patch("app.services.ingestion_scheduler.SessionLocal", session_factory), patch(
+        "app.services.ingestion_scheduler.httpx.AsyncClient", DummyAsyncClient
+    ), patch(
+        "app.services.ingestion_scheduler.StorageManagerService.ensure_capacity_for_new_download",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "app.services.ingestion_scheduler.LiveATCIngestionService.capture_realtime_stream",
+        new=AsyncMock(side_effect=RuntimeError("capture failed")),
+    ), patch(
+        "app.services.ingestion_scheduler.proxy_provider.get_proxy",
+        new=AsyncMock(return_value="http://proxy.example:8080"),
+    ), patch(
+        "app.services.ingestion_scheduler.proxy_provider.report_result"
+    ) as mocked_report, patch.object(
+        scheduler.client, "ensure_public_session_cookie", new=AsyncMock(return_value=True)
+    ), patch.object(
+        scheduler.client, "cookie_count", return_value=2
+    ), patch.object(
+        scheduler.client, "resolve_realtime_stream_url", new=AsyncMock(return_value="http://example.com/stream")
+    ), patch.object(
+        scheduler.client, "enrich_headers_with_session_cookie", new=AsyncMock(return_value={"User-Agent": "ua"})
+    ):
+        with pytest.raises(RuntimeError, match="capture failed"):
+            await scheduler._run_realtime_once()
+
+    mocked_report.assert_called_once_with("http://proxy.example:8080", False)
+
+
+@pytest.mark.asyncio
 async def test_run_historical_once_downloads_first_link(override_settings):
     scheduler = LiveATCScheduler()
     override_settings(a2_http_max_retries=1, a2_historical_max_files_per_run=1)

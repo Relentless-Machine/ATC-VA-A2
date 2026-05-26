@@ -167,6 +167,18 @@ async def test_list_historical_links_includes_browser_archive_flow_result(overri
     mocked_browser_flow.assert_called_once_with("VHHH")
 
 
+def test_historical_audio_link_from_html_extracts_download_link():
+    client = LiveATCHTTPClient()
+    html = '<html><body><a href="/archive/vhhh/VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3">Download</a></body></html>'
+
+    link = client._historical_audio_link_from_html(html, "https://www.liveatc.net/archive.php?m=vhhh5")
+
+    assert link is not None
+    assert link.url == "https://www.liveatc.net/archive/vhhh/VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3"
+    assert link.file_name == "VHHH5-App-Dep-Dir-Zone-May-11-2026-0330Z.mp3"
+    assert link.referer_url == "https://www.liveatc.net/archive.php?m=vhhh5"
+
+
 @pytest.mark.network
 @pytest.mark.asyncio
 async def test_resolve_realtime_stream_url_real_network(network_guard):

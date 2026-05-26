@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     a2_proxy_health_probe_attempts: int = 3
     a2_proxy_fail_cooldown_seconds: int = 120
     a2_browser_bootstrap_wait_seconds: float = 20.0
-    a2_browser_headless: bool = False
+    a2_browser_headless: bool = True
     a2_browser_channel: str = "chrome"
     # Optional persistent Playwright profile directory (if set, Playwright will launch a
     # persistent context using this directory so cookies/storage persist between runs).

@@ -24,6 +24,7 @@
 - Playwright 持久化 profile 或 storage_state，优先使用真实浏览器会话。
 - 浏览器辅助导出 Cookie，允许在真实浏览器中手工完成验证后保存会话。
 - 浏览器鼠标和键盘模拟脚本，尝试更接近人工操作流程。
+- CloakBrowser 官方入口：安装 `cloakbrowser` 后会自动下载 stealth Chromium，A2 直接使用；仅在需要本地 binary 或下载失败时设置 `CLOAKBROWSER_BINARY_PATH`。
 - Playwright request context 下载，尽量复用浏览器上下文中的会话状态。
 - 代理池回退，作为网络层的可选补充，不是默认主路径。
 
@@ -47,14 +48,16 @@
 
 为了让浏览器回退真正可用，下面这些本机配置会直接影响成功率：
 
-- Chrome 安装位置和 channel 可用性。
-- 本地 Chrome profile 的访问权限，尤其是 `Profile 3` 这类目录。
-- 是否存在正在运行的 Chrome 进程占用同一 profile。
-- Playwright 浏览器是否已安装。
+- CloakBrowser 已安装（`pip install cloakbrowser`），首次使用会自动下载 binary。
+- 如需自定义本地 binary 或下载失败，可设置 `CLOAKBROWSER_BINARY_PATH`。
+- 若使用浏览器辅助导出 Cookie（Playwright/系统 Chrome），确保目标 profile 未被占用。
+- Playwright 仅用于辅助脚本；CloakBrowser 本身不需要 `playwright install chromium`。
 - 本机时间、时区和网络连通性。
 - 是否有扩展、企业策略或防火墙影响 Cloudflare 页面。
 
-相关脚本已经增加了 profile clone、storage_state 导出和模拟鼠标键盘的辅助路径，便于把人工验证后的浏览器状态保存下来继续使用。
+相关脚本已经增加了 profile clone、storage_state 导出和模拟鼠标键盘的辅助路径，便于把人工验证后的浏览器状态保存下来继续使用。若启用 CloakBrowser，保持官方默认即可，避免额外的二进制探测逻辑。
+
+- `a2_browser_headless`：浏览器是否无头运行，默认 `true`。
 
 ## 安装与启动
 

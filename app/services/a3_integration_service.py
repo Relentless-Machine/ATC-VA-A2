@@ -117,6 +117,21 @@ class A3IntegrationService:
         voice_file = await self.query_service.get_voice_file(voice_file_id)
         if not voice_file:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice file not found")
+        if voice_file.a3_process_status != 3:
+            status_map = {
+                0: "not_started",
+                1: "processing",
+                2: "completed",
+                3: "failed",
+            }
+            current_status = status_map.get(voice_file.a3_process_status, "unknown")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Only failed A-3 processing can be retried "
+                    f"(current status={voice_file.a3_process_status}:{current_status})"
+                ),
+            )
 
         # Calculate backoff delay
         delay = min(self.base_retry_delay * (2 ** attempt) + uniform(0, self.base_retry_delay), self.max_retry_delay)

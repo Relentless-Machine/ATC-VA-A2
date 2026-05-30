@@ -181,6 +181,39 @@ async def test_retry_processing_rejects_too_many_attempts(db_session):
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.parametrize("a3_status", [0, 1, 2])
+@pytest.mark.asyncio
+async def test_retry_processing_rejects_non_failed_status(db_session, a3_status):
+    await db_session.execute(
+        insert(VoiceFile).values(
+            id=40 + a3_status,
+            file_name=f"non_failed_{a3_status}.mp3",
+            file_path=f"/audio/non_failed_{a3_status}.mp3",
+            icao_code="VHHH",
+            start_time_utc=jan1_2024_utc(0),
+            end_time_utc=jan1_2024_utc(1),
+            status=1,
+            a3_process_status=a3_status,
+            error_log="keep me",
+            duration_ms=3600000,
+            last_access_at=jan1_2024_utc(0),
+            created_at=jan1_2024_utc(0),
+            updated_at=jan1_2024_utc(0),
+        )
+    )
+    await db_session.commit()
+
+    svc = A3IntegrationService(db_session)
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.retry_processing(40 + a3_status, attempt=0)
+
+    assert exc_info.value.status_code == 400
+    assert "Only failed A-3 processing can be retried" in exc_info.value.detail
+    row = await db_session.get(VoiceFile, 40 + a3_status)
+    assert row.a3_process_status == a3_status
+    assert row.error_log == "keep me"
+
+
 @pytest.mark.asyncio
 async def test_sync_annotation_status_counts_ready_segments(db_session):
     await db_session.execute(

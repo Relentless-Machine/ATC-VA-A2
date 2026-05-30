@@ -173,25 +173,19 @@ a2_voice.db
 
 `data/`、`*.db`、`.env` 和本地 Cookie 目录都已加入 `.gitignore`，所以你在 Git 里看不到下载文件是正常的，但它们会保留在本地磁盘上。
 
-## 调度 API
+## 当前 FastAPI 接口
 
-```text
-POST /api/v1/ingestion/scheduler/start
-POST /api/v1/ingestion/scheduler/stop
-GET  /api/v1/ingestion/scheduler/status
-POST /api/v1/ingestion/scheduler/trigger/realtime
-POST /api/v1/ingestion/scheduler/trigger/historical
-```
+启动服务后，Swagger 页面会展示当前真实暴露的接口。当前 FastAPI 层主要提供：
 
-`status` 中和 LiveATC 相关的字段：
+- 健康检查：`GET /health`。
+- 音频登记：`POST /api/v1/ingestion/realtime/register`、`POST /api/v1/ingestion/historical/register`。
+- 音频查询/流式播放：`GET /api/v1/audio/stream`。
+- A-3 集成：处理请求、状态查询、失败重试、标注同步和处理队列。
+- A-5 集成：轨迹/标注者查询、标注同步和跨模块报告。
+- 管理接口：`POST /api/v1/admin/cleanup`。
 
-- `last_realtime_at`：最近一次实时采集成功时间。
-- `last_historical_at`：最近一次历史检查完成时间。
-- `last_historical_found`：本轮找到或生成的历史候选数量。
-- `last_historical_downloaded`：本轮成功下载数量。
-- `last_historical_failed`：本轮下载失败数量。
-- `last_historical_first_failed_status`：首个失败 HTTP 状态码，例如 `403`。
-- `last_cookie_warmup_ok` / `last_cookie_count`：预热会话 Cookie 的结果。
+实时/历史 LiveATC 下载调度逻辑目前实现于 `app/services/ingestion_scheduler.py` 的
+`LiveATCScheduler` 服务层，尚未暴露为 `/api/v1/ingestion/scheduler/*` HTTP 接口。
 
 ## A-3 和 A-5 模块集成
 
@@ -203,7 +197,7 @@ A-3 集成接口：
 
 - `POST /api/v1/a3/request-processing`：发起处理请求。
 - `GET /api/v1/a3/status/{voice_file_id}`：查询处理状态。
-- `POST /api/v1/a3/retry/{voice_file_id}`：重试失败的处理。
+- `POST /api/v1/a3/retry/{voice_file_id}`：仅对失败状态的处理任务发起重试。
 - `POST /api/v1/a3/sync-annotations/{voice_file_id}`：同步标注状态。
 - `GET /api/v1/a3/queue`：查看处理队列。
 
@@ -231,12 +225,35 @@ $env:A2_HISTORICAL_MAX_FILES_PER_RUN="1"
 python run.py
 ```
 
-然后在 Swagger 或 HTTP 客户端中调用：
+当前实时/历史下载触发不通过 Swagger 或 HTTP scheduler 接口暴露。需要验证真实下载时，可以用
+`LiveATCScheduler` 服务层运行一次实时和历史任务：
 
-```text
-POST http://127.0.0.1:8000/api/v1/ingestion/scheduler/trigger/realtime
-POST http://127.0.0.1:8000/api/v1/ingestion/scheduler/trigger/historical
-GET  http://127.0.0.1:8000/api/v1/ingestion/scheduler/status
+```bash
+A2_AUTO_START_SCHEDULER=false \
+A2_AUDIO_STORAGE="data/liveatc_verification/audio" \
+DB_URL="sqlite+aiosqlite:///./data/liveatc_verification/a2_verify.db" \
+A2_REALTIME_CAPTURE_SECONDS=5 \
+A2_REALTIME_CAPTURE_MAX_BYTES=65536 \
+A2_HISTORICAL_MAX_FILES_PER_RUN=1 \
+python - <<'PY'
+import asyncio
+
+from app.db.init_db import init_database
+from app.db.session import engine
+from app.services.ingestion_scheduler import LiveATCScheduler
+
+
+async def main():
+    await init_database(engine)
+    scheduler = LiveATCScheduler()
+    print("realtime_ok=", await scheduler.trigger_realtime_once())
+    print("historical_downloaded=", await scheduler.trigger_historical_once())
+    print("status=", scheduler.status())
+    await engine.dispose()
+
+
+asyncio.run(main())
+PY
 ```
 
 本次实测结果：
@@ -252,13 +269,13 @@ GET  http://127.0.0.1:8000/api/v1/ingestion/scheduler/status
 - 服务器允许一个真实浏览器上下文运行，或能提供与当前 CloakBrowser 配置兼容的 headed 环境。
 - `data/`、数据库文件和本地浏览器 profile 目录都使用持久化磁盘，而不是临时目录。
 - 如果服务器网络环境更严格，仍然可能需要配置代理、Cookie 或本地浏览器 profile。
-- 先做一次 `POST /api/v1/ingestion/scheduler/trigger/historical` 的冒烟测试，再切换到自动调度。
+- 先通过 `LiveATCScheduler.trigger_historical_once()` 做一次历史下载冒烟测试，再切换到自动调度。
 
 推荐的服务器部署检查顺序是：
 
 1. 确认 `.env` 中的 `DB_URL`、`A2_AUDIO_STORAGE`、`A2_ICAO_CODE` 和浏览器相关配置正确。
-2. 先手动调用一次历史触发接口，确认能在 `data/audio/historical/YYYYMMDD/` 下看到真实 mp3。
-3. 再启动自动调度，观察 `GET /api/v1/ingestion/scheduler/status` 的 `last_historical_downloaded` 和 `last_error`。
+2. 先手动运行一次 `LiveATCScheduler.trigger_historical_once()`，确认能在 `data/audio/historical/YYYYMMDD/` 下看到真实 mp3。
+3. 再启动自动调度，观察服务层 `scheduler.status()` 的 `last_historical_downloaded` 和 `last_error`。
 
 ## 独立下载脚本
 

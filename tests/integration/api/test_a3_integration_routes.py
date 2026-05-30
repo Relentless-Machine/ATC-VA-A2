@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from app.db.models import VoiceFile
+
 pytestmark = pytest.mark.integration
 
 
@@ -43,7 +45,12 @@ async def test_retry_requires_token(client, voice_file_id):
 
 
 @pytest.mark.asyncio
-async def test_retry_success(client, voice_file_id, a3_callback_headers):
+async def test_retry_success(client, db_session, voice_file_id, a3_callback_headers):
+    voice_file = await db_session.get(VoiceFile, voice_file_id)
+    voice_file.a3_process_status = 3
+    voice_file.error_log = "boom"
+    await db_session.commit()
+
     with patch("app.services.a3_integration_service.asyncio.sleep", new=AsyncMock()):
         resp = await client.post(
             f"/api/v1/a3/retry/{voice_file_id}",
@@ -54,6 +61,20 @@ async def test_retry_success(client, voice_file_id, a3_callback_headers):
     payload = resp.json()
     assert payload["voice_file_id"] == voice_file_id
     assert payload["status"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_rejects_non_failed_status(client, voice_file_id, a3_callback_headers):
+    with patch("app.services.a3_integration_service.asyncio.sleep", new=AsyncMock()) as mocked_sleep:
+        resp = await client.post(
+            f"/api/v1/a3/retry/{voice_file_id}",
+            json={"voice_file_id": voice_file_id, "attempt": 0},
+            headers=a3_callback_headers,
+        )
+
+    assert resp.status_code == 400
+    assert "Only failed A-3 processing can be retried" in resp.json()["detail"]
+    mocked_sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio

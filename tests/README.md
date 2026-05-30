@@ -40,7 +40,6 @@ tests/
 │       ├── test_a3_callback_service.py
 │       ├── test_a3_integration_service.py
 │       ├── test_a5_integration_service.py
-│       ├── test_archive_adapter.py
 │       ├── test_ingestion_scheduler.py
 │       ├── test_ingestion_service.py
 │       ├── test_liveatc_client.py
@@ -108,7 +107,7 @@ pytest tests/ -v -m "not network and not e2e and not longrun"
 推荐的当前回归命令：
 
 ```bash
-pytest tests/unit/services/test_a3_callback_service.py tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/unit/services/test_ingestion_scheduler.py tests/unit/services/test_query_service.py tests/unit/services/test_storage_service.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py tests/integration/api/test_callback_routes.py tests/integration/api/test_audio_routes.py tests/integration/api/test_health_routes.py tests/integration/api/test_ingestion_routes.py -m "not network and not e2e and not longrun" -v
+pytest tests/unit/services/test_a3_callback_service.py tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_ingestion_scheduler.py tests/unit/services/test_query_service.py tests/unit/services/test_storage_service.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py tests/integration/api/test_callback_routes.py tests/integration/api/test_audio_routes.py tests/integration/api/test_health_routes.py tests/integration/api/test_ingestion_routes.py -m "not network and not e2e and not longrun" -v
 ```
 
 ## 浏览器回退相关测试建议
@@ -135,7 +134,7 @@ pytest -m integration -v
 A-3/A-5 相关测试：
 
 ```bash
-pytest tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/unit/services/test_archive_adapter.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py -v
+pytest tests/unit/services/test_a3_integration_service.py tests/unit/services/test_a5_integration_service.py tests/integration/api/test_a3_integration_routes.py tests/integration/api/test_a5_integration_routes.py -v
 ```
 
 ### A-5 模块对接说明

@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     a2_icao_code: str = "VHHH"
     a2_audio_storage: str = "./data/audio"
     a2_chunk_size: int = 65536
-    a2_disk_limit_bytes: int = 10 * 1024 * 1024 * 1024
     a2_disk_safe_free_bytes: int = 2 * 1024 * 1024 * 1024
     a2_liveatc_search_url: str = "https://www.liveatc.net/search/?icao={icao}"
     a2_liveatc_base_url: str = "https://www.liveatc.net"
@@ -67,9 +66,6 @@ class Settings(BaseSettings):
     # Playwright profile/storage state with a human-completed verification.
     a2_liveatc_browser_archive_flow_enabled: bool = False
     a2_liveatc_browser_flow_timeout_seconds: float = 90.0
-    # Max concurrent downloads to avoid triggering server-side rate limits (0 = unlimited)
-    a2_max_concurrent_downloads: int = 1
-
     # proxy.scdn.io API settings
     a2_proxy_api_enabled: bool = False
     a2_proxy_api_url: str = "https://proxy.scdn.io/api/get_proxy.php"

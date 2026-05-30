@@ -309,24 +309,7 @@ pytest tests/ -v -m "not network and not e2e and not longrun"
 - [.github/CODEOWNERS](.github/CODEOWNERS) 会把全仓库默认指派给 `@Relentless-Machine`。
 - [.github/workflows/require-main-owner-review.yml](.github/workflows/require-main-owner-review.yml) 会在 PR 目标分支为 `main` 时检查是否已有你的批准。
 
-## ATC 音频来源与多源支持
-
-本项目支持多个 ATC 音频存档来源。推荐优先级和集成指南详见：
-
-- [ATC_SOURCES_RESEARCH.md](ATC_SOURCES_RESEARCH.md)（来源研究、合规指南）
-- [ARCHIVE_ADAPTER_GUIDE.md](ARCHIVE_ADAPTER_GUIDE.md)（适配器框架、配置示例）
-- [app/services/archive_adapter.py](app/services/archive_adapter.py)（适配器接口定义）
-
-**当前支持的来源**：
-
-- LiveATC（主要，需 Cookie）
-- Broadcastify（推荐，需官方 API）
-- 本地镜像（可配置）
-- 直接录制（SDR，待研究）
-
 ## 后续任务
 
 - [ ] 接入 A-1 航迹数据实时同步，自动匹配 `track_id`。
 - [ ] A-4 前端界面对接，支持音频流播放、轨迹展示和标注编辑。
-- [ ] 实现 Broadcastify 官方 API 适配器（推荐优先）。
-- [ ] 支持适配器链式回退（多源尝试）。

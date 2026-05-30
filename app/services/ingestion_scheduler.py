@@ -284,9 +284,6 @@ class LiveATCScheduler:
                 return 0
 
         headers = self._default_headers()
-        # Limit concurrent historical download attempts to avoid server-side throttling.
-        max_conc = max(1, settings.a2_max_concurrent_downloads or 1)
-        self._download_semaphore = getattr(self, '_download_semaphore', None) or __import__('asyncio').Semaphore(max_conc)
         last_exc: Exception | None = None
         max_retries = max(settings.a2_http_max_retries, 1)
         for attempt in range(max_retries):

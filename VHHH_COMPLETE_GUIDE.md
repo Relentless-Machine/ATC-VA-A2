@@ -192,7 +192,6 @@ ATC-VA-A2/
 │       └── liveatc_cookie.txt             # Cookie 文件
 ├── app/
 │   ├── services/
-│   │   ├── archive_adapter.py             # 多源适配器框架
 │   │   ├── liveatc_client.py
 │   │   └── ingestion_scheduler.py
 │   └── core/
@@ -400,8 +399,7 @@ playwright install chromium
 - [详细技术文档](VHHH_MULTIMETHOD_README.md) - 完整功能说明
 - [快速开始指南](QUICKSTART.md) - 第一步指南
 - [改进总结](IMPROVEMENTS_SUMMARY.md) - 本轮改动说明
-- [ATC 来源研究](../ATC_SOURCES_RESEARCH.md) - 替代方案分析
-- [适配器框架指南](../ARCHIVE_ADAPTER_GUIDE.md) - 多源架构
+- [LiveATC 下载指南](LIVEATC_DOWNLOAD_GUIDE.md) - 实时和历史语音下载说明
 
 ---
 

@@ -48,8 +48,7 @@ async def request_a3_processing(
     RQ-A-3-10: Request A-3 to process a VoiceFile.
     """
     svc = A3IntegrationService(db)
-    result = await svc.request_processing(payload.voice_file_id)
-    return A3ProcessingResponse(**result)
+    return await svc.request_processing(payload.voice_file_id)
 
 
 @router.get(
@@ -71,8 +70,7 @@ async def get_a3_status(
     RQ-A-3-30: Query processing status and results.
     """
     svc = A3IntegrationService(db)
-    result = await svc.get_processing_status(voice_file_id)
-    return A3ProcessingStatusResponse(**result)
+    return await svc.get_processing_status(voice_file_id)
 
 
 @router.post(
@@ -95,10 +93,9 @@ async def retry_a3_processing(
 
     RQ-A-3-40 integration: Implement retry logic.
     """
-    attempt = payload.attempt if payload else 0
     svc = A3IntegrationService(db)
-    result = await svc.retry_processing(voice_file_id, attempt)
-    return A3RetryResponse(**result)
+    attempt = payload.attempt if payload else 0
+    return await svc.retry_processing(voice_file_id, attempt)
 
 
 @router.post(
@@ -117,8 +114,7 @@ async def sync_a3_annotations(
     Marks segments as ready for human annotation based on A-3 output completeness.
     """
     svc = A3IntegrationService(db)
-    result = await svc.sync_annotation_status(voice_file_id)
-    return A3AnnotationSyncResponse(**result)
+    return await svc.sync_annotation_status(voice_file_id)
 
 
 @router.get(
@@ -144,5 +140,4 @@ async def get_a3_queue(
     - 3: failed
     """
     svc = A3IntegrationService(db)
-    result = await svc.list_processing_queue(status_filter, limit)
-    return A3ProcessingQueueResponse(**result)
+    return await svc.list_processing_queue(status_filter, limit)

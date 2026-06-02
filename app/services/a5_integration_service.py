@@ -1,4 +1,4 @@
-"""
+﻿"""
 A-5 Integration Service
 
 Manages interaction with A-5 database module:
@@ -612,6 +612,12 @@ class A5IntegrationService:
 
         RQ-A-5-50: Provide aggregated system status to A-5.
         """
+        # Ensure timezone-aware datetimes for DB query
+        if start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+
         # Get all voice files in time range
         query = select(VoiceFile).where(VoiceFile.start_time_utc >= start_time, VoiceFile.end_time_utc <= end_time)
 
@@ -646,3 +652,4 @@ class A5IntegrationService:
             "annotation_rate": (annotated_segments / total_segments * 100) if total_segments > 0 else 0,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
+

@@ -112,7 +112,9 @@ class ProxyProvider:
         if source in {"api", "mixed"}:
             try:
                 api_pool = await self._fetch_api_pool()
-            except Exception:
+            except Exception as e:
+                from app.core.logger import logger
+                logger.error(f"Failed to fetch API proxies from {settings.a2_proxy_api_url}: {repr(e)}")
                 api_pool = []
 
         self._pool = self._dedupe(static_pool + api_pool)
@@ -129,7 +131,13 @@ class ProxyProvider:
         now = time.time()
         available = [p for p in self._pool if self._cooldown_until.get(p, 0.0) <= now]
         if not available:
-            return None
+            if not self._pool:
+                return None
+            # Fallback: if all proxies are in cooldown, attempt to probe the least recently used ones anyway
+            from app.core.logger import logger
+            logger.warning("All proxies mapped to cooldown! Re-enabling fallback probing.")
+            sorted_by_cooldown = sorted(self._pool, key=lambda p: self._cooldown_until.get(p, 0.0))
+            available = sorted_by_cooldown[: max(1, min(3, len(self._pool)))]
 
         mode = (settings.a2_proxy_mode or "round_robin").strip().lower()
         candidates = list(available)
@@ -173,7 +181,9 @@ class ProxyProvider:
             async with httpx.AsyncClient(timeout=timeout, proxy=proxy) as client:
                 resp = await client.get(check_url, follow_redirects=True)
                 return resp.status_code < 400
-        except Exception:
+        except Exception as e:
+            from app.core.logger import logger
+            logger.warning(f"Proxy health check failed for {self.redact(proxy)}: {repr(e)}")
             return False
 
     def report_result(self, proxy: str | None, ok: bool) -> None:

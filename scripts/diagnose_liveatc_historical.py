@@ -52,29 +52,7 @@ def debug_archive_flow(client: LiveATCHTTPClient) -> None:
             target_date = slot.strftime("%Y%m%d")
             target_time = client._archive_time_label(slot)
 
-            page.evaluate(
-                                """
-                                ({ value }) => {
-                                    const visible = document.querySelector('#archiveDateDisplay');
-                                    if (visible && visible._flatpickr) {
-                                        visible._flatpickr.setDate(value, true, 'Ymd');
-                                        return;
-                                    }
-                                    const hidden = document.querySelector('#archiveDate');
-                                    if (hidden) {
-                                        hidden.value = value;
-                                        hidden.dispatchEvent(new Event('input', { bubbles: true }));
-                                        hidden.dispatchEvent(new Event('change', { bubbles: true }));
-                                    }
-                                    if (visible) {
-                                        visible.value = value;
-                                        visible.dispatchEvent(new Event('input', { bubbles: true }));
-                                        visible.dispatchEvent(new Event('change', { bubbles: true }));
-                                    }
-                                }
-                                """,
-                                {"value": target_date},
-                        )
+            client._set_archive_form_date(page, target_date)
 
             time_select = page.locator("select[name='time']").first
             if time_select.count():

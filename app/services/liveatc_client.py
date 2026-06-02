@@ -533,6 +533,32 @@ class LiveATCHTTPClient:
         end = slot + timedelta(minutes=30)
         return f"{slot.strftime('%H%M')}-{end.strftime('%H%M')}Z"
 
+        @staticmethod
+        def _set_archive_form_date(page, value: str) -> None:
+                page.evaluate(
+                        """
+                        ({ value }) => {
+                            const visible = document.querySelector('#archiveDateDisplay');
+                            if (visible && visible._flatpickr) {
+                                visible._flatpickr.setDate(value, true, 'Ymd');
+                                return;
+                            }
+                            const hidden = document.querySelector('#archiveDate');
+                            if (hidden) {
+                                hidden.value = value;
+                                hidden.dispatchEvent(new Event('input', { bubbles: true }));
+                                hidden.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                            if (visible) {
+                                visible.value = value;
+                                visible.dispatchEvent(new Event('input', { bubbles: true }));
+                                visible.dispatchEvent(new Event('change', { bubbles: true }));
+                            }
+                        }
+                        """,
+                        {"value": value},
+                )
+
     def _recent_archive_candidates(
         self, *, station: str, archive_identifier: str, now: datetime | None = None
     ) -> list[HistoricalAudioLink]:
@@ -574,30 +600,7 @@ class LiveATCHTTPClient:
             mount = self.mount_ids[0] if self.mount_ids else icao.lower()
             page.goto(f"{self.base_url}/archive.php?m={mount}", wait_until="domcontentloaded", timeout=timeout_ms)
             page.wait_for_timeout(int(max(settings.a2_browser_bootstrap_wait_seconds, 20.0) * 1000))
-
-            page.evaluate(
-                """
-                ({ value }) => {
-                  const visible = document.querySelector('#archiveDateDisplay');
-                  if (visible && visible._flatpickr) {
-                    visible._flatpickr.setDate(value, true, 'Ymd');
-                    return;
-                  }
-                  const hidden = document.querySelector('#archiveDate');
-                  if (hidden) {
-                    hidden.value = value;
-                    hidden.dispatchEvent(new Event('input', { bubbles: true }));
-                    hidden.dispatchEvent(new Event('change', { bubbles: true }));
-                  }
-                  if (visible) {
-                    visible.value = value;
-                    visible.dispatchEvent(new Event('input', { bubbles: true }));
-                    visible.dispatchEvent(new Event('change', { bubbles: true }));
-                  }
-                }
-                """,
-                {"value": target_date},
-            )
+            self._set_archive_form_date(page, target_date)
 
             time_select = page.locator("select[name='time']")
             if time_select.count() == 0:

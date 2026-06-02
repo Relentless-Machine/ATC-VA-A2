@@ -41,10 +41,10 @@ async def test_a3_request_processing(db_session: AsyncSession):
     svc = A3IntegrationService(db_session)
     result = await svc.request_processing(voice_file.id)
 
-    assert result["voice_file_id"] == voice_file.id
-    assert result["status"] == 1
-    assert "A-3" in result["message"]
-    assert "Processing request sent" in result["message"]
+    assert result.voice_file_id == voice_file.id
+    assert result.status == 1
+    assert "A-3" in result.message
+    assert "Processing request sent" in result.message
 
     await db_session.refresh(voice_file)
     assert voice_file.a3_process_status == 1
@@ -83,10 +83,10 @@ async def test_a3_get_processing_status(db_session: AsyncSession):
     svc = A3IntegrationService(db_session)
     result = await svc.get_processing_status(voice_file.id)
 
-    assert result["voice_file_id"] == voice_file.id
-    assert result["status_text"] == "completed"
-    assert result["segment_count"] == 3
-    assert result["annotated_count"] == 1
+    assert result.voice_file_id == voice_file.id
+    assert result.status_text == "completed"
+    assert result.segment_count == 3
+    assert result.annotated_count == 1
 
 
 @pytest.mark.asyncio
@@ -109,10 +109,10 @@ async def test_a3_retry_processing(db_session: AsyncSession):
     svc = A3IntegrationService(db_session)
     result = await svc.retry_processing(voice_file.id, attempt=0)
 
-    assert result["voice_file_id"] == voice_file.id
-    assert result["attempt"] == 1
-    assert result["delay_seconds"] >= 2
-    assert result["status"] == 1
+    assert result.voice_file_id == voice_file.id
+    assert result.attempt == 1
+    assert result.delay_seconds >= 2
+    assert result.status == 1
 
     await db_session.refresh(voice_file)
     assert voice_file.a3_process_status == 1
@@ -157,10 +157,10 @@ async def test_a3_sync_annotation_status(db_session: AsyncSession):
     svc = A3IntegrationService(db_session)
     result = await svc.sync_annotation_status(voice_file.id)
 
-    assert result["total_segments"] == 3
-    assert result["ready_for_annotation"] == 1
-    assert result["already_annotated"] == 1
-    assert result["pending_asr"] == 1
+    assert result.total_segments == 3
+    assert result.ready_for_annotation == 1
+    assert result.already_annotated == 1
+    assert result.pending_asr == 1
 
 
 @pytest.mark.asyncio

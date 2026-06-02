@@ -38,9 +38,9 @@ async def test_request_processing_sets_processing_status(db_session):
     svc = A3IntegrationService(db_session)
     result = await svc.request_processing(1)
 
-    assert result["status"] == 1
-    assert result["voice_file_id"] == 1
-    assert result["file_name"] == "req.mp3"
+    assert result.status == 1
+    assert result.voice_file_id == 1
+    assert result.file_name == "req.mp3"
 
 
 @pytest.mark.asyncio
@@ -66,8 +66,8 @@ async def test_request_processing_returns_existing_status(db_session):
     svc = A3IntegrationService(db_session)
     result = await svc.request_processing(2)
 
-    assert result["status"] == 2
-    assert "already" in result["message"].lower()
+    assert result.status == 2
+    assert "already" in result.message.lower()
 
 
 @pytest.mark.asyncio
@@ -133,9 +133,9 @@ async def test_get_processing_status_counts_segments(db_session):
     svc = A3IntegrationService(db_session)
     result = await svc.get_processing_status(3)
 
-    assert result["segment_count"] == 2
-    assert result["annotated_count"] == 1
-    assert result["status_text"] == "processing"
+    assert result.segment_count == 2
+    assert result.annotated_count == 1
+    assert result.status_text == "processing"
 
 
 @pytest.mark.asyncio
@@ -166,8 +166,8 @@ async def test_retry_processing_applies_backoff_and_resets_error(db_session):
     ):
         result = await svc.retry_processing(4, attempt=1)
 
-    assert result["attempt"] == 2
-    assert result["status"] == 1
+    assert result.attempt == 2
+    assert result.status == 1
     mocked_sleep.assert_awaited_once()
 
 
@@ -279,9 +279,9 @@ async def test_sync_annotation_status_counts_ready_segments(db_session):
     svc = A3IntegrationService(db_session)
     result = await svc.sync_annotation_status(5)
 
-    assert result["ready_for_annotation"] == 1
-    assert result["already_annotated"] == 1
-    assert result["pending_asr"] == 1
+    assert result.ready_for_annotation == 1
+    assert result.already_annotated == 1
+    assert result.pending_asr == 1
 
 
 @pytest.mark.asyncio
@@ -328,5 +328,5 @@ async def test_list_processing_queue_filters_and_orders(db_session):
     svc = A3IntegrationService(db_session)
     result = await svc.list_processing_queue(status_filter=1, limit=10)
 
-    assert result["queue_size"] == 1
-    assert result["items"][0]["voice_file_id"] == 12
+    assert result.queue_size == 1
+    assert result.items[0].voice_file_id == 12

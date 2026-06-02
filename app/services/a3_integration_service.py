@@ -12,17 +12,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
 from random import uniform
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import VoiceFile, VoiceSegment
 from app.services.query_service import AudioQueryService
+from app.schemas.a3_integration import (
+    A3AnnotationSyncResponse,
+    A3ProcessingQueueResponse,
+    A3ProcessingResponse,
+    A3ProcessingStatusResponse,
+    A3RetryResponse,
+    A3QueueItem,
+)
 
 logger = logging.getLogger(__name__)
+
+# Basic in-memory state tracking to avoid trusting client retry counts.
+# In a distributed production setup, this would be backed by Redis or a DB column.
+_retry_state: dict[int, int] = {}
 
 
 class A3IntegrationService:
@@ -35,7 +46,7 @@ class A3IntegrationService:
         self.max_retry_delay = 60  # seconds
         self.max_retries = 5
 
-    async def request_processing(self, voice_file_id: int) -> dict:
+    async def request_processing(self, voice_file_id: int) -> A3ProcessingResponse:
         """
         Trigger A-3 preprocessing for a voice file.
 
@@ -46,11 +57,14 @@ class A3IntegrationService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Voice file not found")
 
         if voice_file.a3_process_status in (2, 3):  # Already processed or failed
-            return {
-                "voice_file_id": voice_file_id,
-                "status": voice_file.a3_process_status,
-                "message": "Processing already initiated or completed",
-            }
+            return A3ProcessingResponse(
+                voice_file_id=voice_file_id,
+                status=voice_file.a3_process_status,
+                file_name=voice_file.file_name,
+                start_time_utc=voice_file.start_time_utc.isoformat(),
+                end_time_utc=voice_file.end_time_utc.isoformat(),
+                message="Processing already initiated or completed",
+            )
 
         # Update status to "processing"
         voice_file.a3_process_status = 1
@@ -58,18 +72,21 @@ class A3IntegrationService:
         await self.db.commit()
         await self.db.refresh(voice_file)
 
+        # Reset retry counter on new processing path
+        _retry_state[voice_file_id] = 0
+
         logger.info(f"A-3 processing requested for voice_file_id={voice_file_id} ({voice_file.file_name})")
 
-        return {
-            "voice_file_id": voice_file_id,
-            "status": 1,
-            "file_name": voice_file.file_name,
-            "start_time_utc": voice_file.start_time_utc.isoformat(),
-            "end_time_utc": voice_file.end_time_utc.isoformat(),
-            "message": "Processing request sent to A-3 module",
-        }
+        return A3ProcessingResponse(
+            voice_file_id=voice_file_id,
+            status=1,
+            file_name=voice_file.file_name,
+            start_time_utc=voice_file.start_time_utc.isoformat(),
+            end_time_utc=voice_file.end_time_utc.isoformat(),
+            message="Processing request sent to A-3 module",
+        )
 
-    async def get_processing_status(self, voice_file_id: int) -> dict:
+    async def get_processing_status(self, voice_file_id: int) -> A3ProcessingStatusResponse:
         """
         Get current A-3 processing status for a voice file.
 
@@ -94,23 +111,25 @@ class A3IntegrationService:
         # Get annotated segment count
         annotated_count = sum(1 for seg in segments if seg.is_annotated)
 
-        return {
-            "voice_file_id": voice_file_id,
-            "file_name": voice_file.file_name,
-            "a3_process_status": voice_file.a3_process_status,
-            "status_text": status_map.get(voice_file.a3_process_status, "unknown"),
-            "segment_count": len(segments),
-            "annotated_count": annotated_count,
-            "error_log": voice_file.error_log,
-            "updated_at": voice_file.updated_at.isoformat(),
-        }
+        return A3ProcessingStatusResponse(
+            voice_file_id=voice_file_id,
+            file_name=voice_file.file_name,
+            a3_process_status=voice_file.a3_process_status,
+            status_text=status_map.get(voice_file.a3_process_status, "unknown"),
+            segment_count=len(segments),
+            annotated_count=annotated_count,
+            error_log=voice_file.error_log,
+            updated_at=voice_file.updated_at.isoformat(),
+        )
 
-    async def retry_processing(self, voice_file_id: int, attempt: int = 0) -> dict:
+    async def retry_processing(self, voice_file_id: int, attempt: int = 0) -> A3RetryResponse:
         """
         Retry A-3 processing with exponential backoff.
-
-        RQ-A-3-40 integration: Implement retry logic.
+        
+        RQ-A-3-40 integration: Implement retry logic. Uses server-side state tracking.
         """
+        attempt = max(_retry_state.get(voice_file_id, 0), attempt)
+
         if attempt >= self.max_retries:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Max retry attempts ({self.max_retries}) exceeded")
 
@@ -141,22 +160,24 @@ class A3IntegrationService:
         # Wait before retrying
         await asyncio.sleep(delay)
 
-        # Reset status to "processing"
+        # Reset status to "processing" and tick attempt counter
         voice_file.a3_process_status = 1
         voice_file.error_log = None
         self.db.add(voice_file)
         await self.db.commit()
         await self.db.refresh(voice_file)
+        
+        _retry_state[voice_file_id] = attempt + 1
 
-        return {
-            "voice_file_id": voice_file_id,
-            "attempt": attempt + 1,
-            "delay_seconds": delay,
-            "status": 1,
-            "message": "Retry request submitted to A-3 module",
-        }
+        return A3RetryResponse(
+            voice_file_id=voice_file_id,
+            attempt=attempt + 1,
+            delay_seconds=delay,
+            status=1,
+            message="Retry request submitted to A-3 module",
+        )
 
-    async def sync_annotation_status(self, voice_file_id: int) -> dict:
+    async def sync_annotation_status(self, voice_file_id: int) -> A3AnnotationSyncResponse:
         """
         Synchronize segment annotation status from A-3 processing results.
 
@@ -181,15 +202,15 @@ class A3IntegrationService:
             f"{ready_for_annotation}/{len(segments)} segments ready for annotation"
         )
 
-        return {
-            "voice_file_id": voice_file_id,
-            "total_segments": len(segments),
-            "ready_for_annotation": ready_for_annotation,
-            "already_annotated": sum(1 for seg in segments if seg.is_annotated),
-            "pending_asr": sum(1 for seg in segments if not seg.asr_content),
-        }
+        return A3AnnotationSyncResponse(
+            voice_file_id=voice_file_id,
+            total_segments=len(segments),
+            ready_for_annotation=ready_for_annotation,
+            already_annotated=sum(1 for seg in segments if seg.is_annotated),
+            pending_asr=sum(1 for seg in segments if not seg.asr_content),
+        )
 
-    async def list_processing_queue(self, status_filter: int | None = None, limit: int = 20) -> dict:
+    async def list_processing_queue(self, status_filter: int | None = None, limit: int = 20) -> A3ProcessingQueueResponse:
         """
         List voice files in A-3 processing queue.
 
@@ -207,16 +228,16 @@ class A3IntegrationService:
 
         status_map = {0: "not_started", 1: "processing", 2: "completed", 3: "failed"}
 
-        return {
-            "queue_size": len(files),
-            "items": [
-                {
-                    "voice_file_id": f.id,
-                    "file_name": f.file_name,
-                    "a3_process_status": f.a3_process_status,
-                    "status_text": status_map.get(f.a3_process_status, "unknown"),
-                    "created_at": f.created_at.isoformat(),
-                }
+        return A3ProcessingQueueResponse(
+            queue_size=len(files),
+            items=[
+                A3QueueItem(
+                    voice_file_id=f.id,
+                    file_name=f.file_name,
+                    a3_process_status=f.a3_process_status,
+                    status_text=status_map.get(f.a3_process_status, "unknown"),
+                    created_at=f.created_at.isoformat(),
+                )
                 for f in files
             ],
-        }
+        )

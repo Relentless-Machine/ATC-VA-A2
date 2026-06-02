@@ -105,23 +105,20 @@ class LiveATCIngestionService:
         file_path = storage_dir / file_name
 
         written = 0
-
-        def _open_file() -> object:
-            return open(file_path, "wb")
-
-        fp = await asyncio.to_thread(_open_file)
         failed = False
         try:
-            async for chunk in byte_iter:
-                if not chunk:
-                    continue
-                await asyncio.to_thread(fp.write, chunk)
-                written += len(chunk)
+            with file_path.open("wb") as f:
+                async for chunk in byte_iter:
+                    if not chunk:
+                        continue
+                    # For local disk I/O, writing 8KB chunks synchronously in the async loop
+                    # is generally acceptable and avoids thread-boundary resource leaks.
+                    f.write(chunk)
+                    written += len(chunk)
         except Exception:
             failed = True
             raise
         finally:
-            await asyncio.to_thread(fp.close)
             if failed:
                 file_path.unlink(missing_ok=True)
 

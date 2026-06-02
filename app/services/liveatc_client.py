@@ -385,11 +385,15 @@ class LiveATCHTTPClient:
         except Exception:
             return 0, "", []
         finally:
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+            if 'page' in locals() and page:
+                try: page.close()
+                except: pass
+            if 'context' in locals() and context and context != browser:
+                try: context.close()
+                except: pass
+            if browser:
+                try: browser.close()
+                except: pass
 
     @staticmethod
     def _browser_fetch_bytes(url: str, *, referer: str | None = None) -> tuple[int, bytes]:
@@ -457,11 +461,15 @@ class LiveATCHTTPClient:
         except Exception:
             return 0, b""
         finally:
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+            if 'page' in locals() and page:
+                try: page.close()
+                except: pass
+            if 'context' in locals() and context and context != browser:
+                try: context.close()
+                except: pass
+            if browser:
+                try: browser.close()
+                except: pass
 
     @staticmethod
     def _browser_request_get(url: str, *, referer: str | None = None) -> tuple[int, bytes, str]:
@@ -495,11 +503,15 @@ class LiveATCHTTPClient:
         except Exception:
             return 0, b"", ""
         finally:
-            if browser is not None:
-                try:
-                    browser.close()
-                except Exception:
-                    pass
+            if 'page' in locals() and page:
+                try: page.close()
+                except: pass
+            if 'context' in locals() and context and context != browser:
+                try: context.close()
+                except: pass
+            if browser:
+                try: browser.close()
+                except: pass
 
     @staticmethod
     def cookie_count(client: httpx.AsyncClient) -> int:
@@ -873,7 +885,7 @@ class LiveATCHTTPClient:
             async with client.stream("GET", url, follow_redirects=True) as resp:
                 if resp.status_code >= 400:
                     return False
-                async for chunk in resp.aiter_bytes(chunk_size=1):
+                async for chunk in resp.aiter_bytes(chunk_size=4096):
                     return bool(chunk)
                 return True
         except httpx.HTTPError:
@@ -885,9 +897,9 @@ class LiveATCHTTPClient:
             for base_url in self.archive_base_urls:
                 candidate_pages.append(f"{base_url}/{mount}/")
         browser_flow_link = None
-        if settings.a2_liveatc_browser_archive_flow_enabled and sync_playwright is not None:
+        if settings.a2_liveatc_browser_archive_flow_enabled:
             try:
-                browser_flow_link = await asyncio.to_thread(self._browser_archive_flow_link, icao)
+                browser_flow_link = self._browser_archive_flow_link(icao)
             except Exception:
                 browser_flow_link = None
         try:
